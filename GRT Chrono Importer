@@ -1,12 +1,28 @@
 <!DOCTYPE html>
+<!--
+GRT Importer (Standard) v0.80 — Release
+Build date: 2025-12-12
+
+Changes in this build:
+- Export filename uses base .grtload stem + timestamp (YYYYMMDD_HHMM), no seconds.
+- Fix: grtBaseFilename TDZ crash (single declaration, no pre-use assignments).
+- Fix: Ladder UI clears/locks until a base .grtload with a real ladder (2+ steps) is loaded.
+- Fix: Start New Session fully resets ladder state + re-applies ladder visibility/lock state.
+
+Notes:
+- localStorage keys are namespaced (xqa_*).
+- Expected state (no base loaded) is not an error.
+-->
+
+
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chronograph → GRT Importer</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>GRT Importer Standard v0.80</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
         :root {
             --grt-bg: #10141c;
             --grt-panel: #1b2431;
@@ -34,7 +50,7 @@
         .text-grt-soft { color: var(--grt-text-soft); }
         .text-grt-subtle { color: var(--grt-text-subtle); }
 
-        /* Floating toast container for status messages */
+        /* Floating toast container */
         #statusArea {
             position: fixed;
             right: 1rem;
@@ -46,1601 +62,276 @@
             max-width: 20rem;
             pointer-events: none;
         }
-    </style>
+    
+        /* Stepper circles for top progress indicator */
+        .step-circle {
+            height: 1.25rem;
+            width: 1.25rem;
+            border-radius: 9999px;
+            border: 1px solid var(--grt-border-soft);
+            background: transparent;
+            color: var(--grt-text-subtle);
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            position: relative;
+            transform-origin: center;
+            transition:
+                background-color 0.18s ease,
+                border-color 0.18s ease,
+                color 0.18s ease,
+                transform 0.18s ease,
+                box-shadow 0.18s ease;
+        }
+        .step-circle--active {
+            border-color: var(--grt-accent);
+            background: var(--grt-highlight);
+            color: var(--grt-text-soft);
+            transform: scale(1.05);
+        }
+        .step-circle--done {
+            border-color: #22c55e;
+            background: rgba(34, 197, 94, 0.16);
+            color: #bbf7d0;
+        }
+        .step-circle--done::after {
+            content: "✓";
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            opacity: 0.25;
+            pointer-events: none;
+        }
+
+    
+        /* Animated active step circle */
+        .step-circle--active {
+            animation: pulseStep 1.2s infinite ease-in-out;
+        }
+        @keyframes pulseStep {
+            0% { transform: scale(1.05); box-shadow: 0 0 0 0 rgba(60,134,199,0.6); }
+            70% { transform: scale(1.12); box-shadow: 0 0 10px 6px rgba(60,134,199,0); }
+            100% { transform: scale(1.05); box-shadow: 0 0 0 0 rgba(60,134,199,0); }
+        }
+
+        /* Session complete pulse for header pill + stepper */
+        .session-pulse {
+            animation: sessionPulse 0.45s ease-out;
+        }
+        @keyframes sessionPulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.85);
+            }
+            100% {
+                box-shadow: 0 0 0 14px rgba(34, 197, 94, 0);
+            }
+        }
+
+
+
+/* v094: file input button visibility */
+input[type="file"]{color:inherit;}
+input[type="file"]::file-selector-button{
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.92);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-right: 14px;
+  cursor: pointer;
+}
+input[type="file"]::file-selector-button:hover{background: rgba(255,255,255,0.12);}
+input[type="file"]::file-selector-button:active{background: rgba(255,255,255,0.16);}
+</style>
 </head>
 <body class="min-h-screen p-4 md:p-6">
-    <div class="max-w-5xl mx-auto">
-        <!-- Header -->
-        <div class="bg-grt-panel rounded-2xl shadow-2xl p-6 mb-6 border border-grt-frame">
-            <div class="flex items-start justify-between gap-4">
-                <div>
-                    <div class="inline-flex items-center gap-2 mb-2">
-                        <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-grt-highlight border border-grt-accent text-[10px] font-semibold tracking-wide uppercase text-grt-soft">
+<main class="max-w-5xl mx-auto">
+<!-- Header -->
+<div class="bg-grt-panel rounded-2xl shadow-2xl p-6 mb-4 border border-grt-frame">
+<div class="flex items-start justify-between gap-4">
+<div>
+<div class="inline-flex items-center gap-2 mb-2">
+<span class="inline-flex items-center px-2 py-0.5 rounded-full bg-grt-highlight border border-grt-accent text-[10px] font-semibold tracking-wide uppercase text-grt-soft">
                             Chronograph → GRT
                         </span>
-                    </div>
-                    <h1 class="text-3xl md:text-4xl font-extrabold text-white mb-1">
+</div>
+<h1 class="text-3xl md:text-4xl font-extrabold text-white mb-1">
                         GARMIN / ATHLON → GRT Importer
                     </h1>
-                    <p class="text-grt-soft text-sm md:text-base">
+<p class="text-grt-soft text-sm md:text-base">
                         Import chronograph data (Garmin Xero C1 Pro or Athlon Rangecraft Velocity Pro)
                         into Gordon's Reloading Tool projects.
                     </p>
-                    <p class="text-grt-subtle text-xs mt-2">
-                        v.023 • XquiziT Arms
+<!-- Quick start line -->
+<p class="text-grt-subtle text-[11px] mt-1">
+                        Quick start: 1) Load base <code class="bg-slate-800/70 px-1 rounded">.grtload</code> (optional),
+                        2) pick chrono + files, 3) download <code class="bg-slate-800/70 px-1 rounded">.grtload</code> and open in GRT.
                     </p>
-                </div>
-                <div class="flex flex-col items-end gap-3">
-                    <!-- New Session button -->
-                    <button
-                        id="newSessionBtn"
-                        class="p-2.5 rounded-full bg-grt-panel-soft hover:bg-grt-highlight text-slate-100 border border-grt-frame shadow-md transition-transform transform hover:-translate-y-0.5 hover:shadow-lg"
-                        title="Start new session"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg"
-                             class="h-5 w-5"
-                             fill="none"
-                             viewBox="0 0 24 24"
-                             stroke="currentColor"
-                             stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M4 4v6h6M20 20v-6h-6M5 13a7 7 0 0112.124-4.95L19 9M5 11l1.876-.95"/>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-        </div>
+<div class="flex flex-wrap items-center gap-2 mt-2 text-xs">
+<p class="text-grt-subtle">
+                            GRT Importer Standard v0.80 • XquiziT Arms
+                        </p>
+<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-grt-soft bg-grt-panel-soft text-[10px] md:text-[11px] text-grt-soft" id="sessionPill" title="Summary of imported sessions and current velocity unit.">
+                            ⚙️ Standard • 0 files • ft/s
+                        </span>
+</div>
+</div>
+<div class="flex flex-col items-end gap-3">
+<div class="flex items-center gap-2">
+<button aria-label="Start new session" class="p-2.5 rounded-full bg-grt-panel-soft hover:bg-grt-highlight text-slate-100 border border-grt-frame shadow-md transition-transform transform hover:-translate-y-0.5 hover:shadow-lg" id="newSessionBtn" title="Start new session">
+<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+<path d="M4.5 12a7.5 7.5 0 0112.62-5.303L19.5 9M7.5 9H4.5V6m15 6a7.5 7.5 0 01-12.62 5.303L4.5 15m12 0h3v3" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div>
+</div>
 
-        <!-- Floating status toasts -->
-        <div id="statusArea"></div>
+<div class="hidden md:flex items-start justify-end">
+    <button id="helpOverlayButton"
+            class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-grt-frame text-grt-soft text-[11px] md:text-xs bg-grt-panel-soft hover:border-grt-accent hover:text-grt-accent transition">
+        <span>❓ How to use this</span>
+    </button>
+</div>
+</div>
+</div>
 
-        <!-- Upload Area -->
-        <div id="uploadArea" class="space-y-4 md:space-y-5">
-            <!-- 1. GRT Base File -->
-            <div class="bg-grt-panel rounded-2xl shadow-xl p-5 md:p-6 border border-grt-frame hover:border-grt-accent transition-colors">
-                <div class="flex items-start gap-4">
-                    <div
-                        class="flex-shrink-0 w-10 h-10 md:w-12 md:h-12 bg-grt-highlight rounded-full flex items-center justify-center text-lg md:text-xl font-bold text-grt-soft border border-grt-accent shadow-inner">
+<!-- Stepper -->
+<div class="mb-4 md:mb-5">
+<ol class="flex items-center gap-2 text-[11px] md:text-xs text-grt-subtle" id="topStepper">
+<li class="flex items-center gap-1" data-step="1">
+<div class="step-circle step-circle--active">
                         1
                     </div>
-                    <div class="flex-1">
-                        <h3 class="text-lg font-bold text-white mb-1.5">
-                            📁 Load GRT Base File (Optional)
-                        </h3>
-                        <p class="text-grt-soft text-xs md:text-sm mb-4">
-                            Upload an existing <code class="text-slate-200 bg-slate-800/80 px-1 py-0.5 rounded text-[11px]">.grtload</code>
-                            file with your rifle, ammo, and powder configuration. Your original tabs and ladder remain untouched.
-                            Standard mode creates a new <strong>Imported Measurement</strong> tab.
-                            Ladder mode creates a new <strong>Imported Ladder</strong> tab.
-                        </p>
-                        <div class="flex flex-wrap items-center gap-3">
-                            <input type="file" id="grtBaseInput" accept=".grtload" class="hidden">
-                            <button
-                                onclick="document.getElementById('grtBaseInput').click()"
-                                id="grtBaseBtn"
-                                class="px-4 py-2 bg-grt-panel-soft hover:bg-grt-highlight text-white rounded-lg text-sm font-medium border border-grt-frame shadow-sm transition-colors">
-                                Select .grtload
-                            </button>
-                            <span id="grtBaseStatus" class="text-emerald-300 text-xs md:text-sm"></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 2. Chronograph Files -->
-            <div class="bg-grt-panel rounded-2xl shadow-xl p-5 md:p-6 border border-grt-frame hover:border-grt-accent transition-colors">
-                <div class="flex items-start gap-4">
-                    <div
-                        class="flex-shrink-0 w-10 h-10 md:w-12 md:h-12 bg-grt-highlight rounded-full flex items-center justify-center text-lg md:text-xl font-bold text-grt-soft border border-grt-accent shadow-inner">
+<span>Load base .grtload</span>
+</li>
+<li class="flex-1 h-px bg-grt-highlight/60 mx-1"></li>
+<li class="flex items-center gap-1" data-step="2">
+<div class="step-circle">
                         2
                     </div>
-                    <div class="flex-1">
-                        <h3 class="text-lg font-bold text-white mb-1.5">🎯 Load Chronograph Files</h3>
-                        <p class="text-grt-soft text-xs md:text-sm mb-4">
+<span>Chronograph files</span>
+</li>
+<li class="flex-1 h-px bg-grt-highlight/30 mx-1"></li>
+<li class="flex items-center gap-1" data-step="3">
+<div class="step-circle">
+                        3
+                    </div>
+<span>Pictures &amp; notes</span>
+</li>
+<li class="flex-1 h-px bg-grt-highlight/30 mx-1"></li>
+<li class="flex items-center gap-1" data-step="4">
+<div class="step-circle">
+                        4
+                    </div>
+<span>Review &amp; download</span>
+</li>
+</ol>
+</div>
+<!-- Floating status toasts --><!-- Floating status toasts -->
+<div aria-live="polite" id="statusArea" role="status"></div>
+<!-- Upload Area -->
+<section aria-label="Import configuration" class="space-y-4 md:space-y-5" id="uploadArea" title="Configure device, units, and import mode, then load your chrono files.">
+<!-- 1. GRT Base File -->
+<div class="bg-grt-panel rounded-2xl shadow-xl p-5 md:p-6 border border-grt-frame hover:border-grt-accent transition-colors">
+<div class="flex items-start gap-4">
+<div class="flex-shrink-0 w-10 h-10 md:w-12 md:h-12 bg-grt-highlight rounded-full flex items-center justify-center text-lg md:text-xl font-bold text-grt-soft border border-grt-accent shadow-inner">
+                        1
+                    </div>
+<div class="flex-1">
+<h3 class="text-lg font-bold text-white mb-1.5">
+                            📁 Load GRT Base File (Optional)
+                        </h3>
+<p class="text-grt-soft text-xs md:text-sm mb-4">
+                            Upload an existing <code class="text-slate-200 bg-slate-800/80 px-1 py-0.5 rounded text-[11px]">.grtload</code>
+                            with your rifle, ammo, and powder configuration. Your original tabs and ladder remain untouched.
+                            Standard mode creates an <strong>Imported Measurement</strong> tab; Ladder mode creates an
+                            <strong>Imported Ladder</strong> tab.
+                        </p>
+<div class="flex flex-wrap items-center gap-3">
+<input accept=".grtload,.grt" class="hidden" id="grtBaseInput" title="Optional: choose a base .grtload file to merge ladder data into." type="file"/>
+<button class="px-4 py-2 bg-grt-panel-soft hover:bg-grt-highlight text-white rounded-lg text-sm font-medium border border-grt-frame shadow-sm transition-colors" id="grtBaseBtn" onclick="document.getElementById('grtBaseInput').click()" title="Browse for the base .grtload file used for ladder imports.">
+                                Select .grtload
+                            </button>
+<span class="text-emerald-300 text-xs md:text-sm" id="grtBaseStatus"></span>
+</div>
+</div>
+</div>
+</div>
+<!-- 2. Chronograph Files -->
+<div class="bg-grt-panel rounded-2xl shadow-xl p-5 md:p-6 border border-grt-frame hover:border-grt-accent transition-colors">
+<div class="flex items-start gap-4">
+<div class="flex-shrink-0 w-10 h-10 md:w-12 md:h-12 bg-grt-highlight rounded-full flex items-center justify-center text-lg md:text-xl font-bold text-grt-soft border border-grt-accent shadow-inner">
+                        2
+                    </div>
+<div class="flex-1">
+<h3 class="text-lg font-bold text-white mb-1.5">🎯 Load Chronograph Files</h3>
+<p class="text-grt-soft text-xs md:text-sm mb-4">
                             Load chronograph data as CSV or Excel files
                             (<code class="text-slate-200 bg-slate-800/80 px-1 py-0.5 rounded text-[11px]">.csv</code>,
                              <code class="text-slate-200 bg-slate-800/80 px-1 py-0.5 rounded text-[11px]">.xls</code>,
                              <code class="text-slate-200 bg-slate-800/80 px-1 py-0.5 rounded text-[11px]">.xlsx</code>),
-                            then select device, file unit, and import mode.
+                            then pick device, file unit, and import mode.
                         </p>
-
-                        <!-- Device / unit / mode -->
-                        <div class="flex flex-col gap-2 mb-4">
-                            <div class="flex flex-wrap items-center gap-2">
-                                <label for="deviceSelect" class="text-grt-soft text-xs md:text-sm font-semibold">
+<!-- Device / unit / mode -->
+<div class="flex flex-col gap-2 mb-4">
+<div class="flex flex-wrap items-center gap-2">
+<label class="text-grt-soft text-xs md:text-sm font-semibold" for="deviceSelect">
                                     Chronograph:
                                 </label>
-                                <select
-                                    id="deviceSelect"
-                                    class="px-2.5 py-1.5 rounded-lg bg-grt-panel-soft text-white text-xs md:text-sm border border-grt-frame focus:outline-none focus:ring-2 focus:ring-[var(--grt-accent)] focus:border-[var(--grt-accent)]">
-                                    <option value="garmin">Garmin Xero C1 Pro</option>
-                                    <option value="athlon">Athlon Rangecraft Velocity Pro</option>
-                                </select>
-                            </div>
-
-                            <div class="flex flex-wrap items-center gap-2">
-                                <label for="unitSelect" class="text-grt-soft text-xs md:text-sm font-semibold">
+<select class="px-2.5 py-1.5 rounded-lg bg-grt-panel-soft text-white text-xs md:text-sm border border-grt-frame focus:outline-none focus:ring-2 focus:ring-[var(--grt-accent)] focus:border-[var(--grt-accent)]" id="deviceSelect" title="Choose the chronograph device that produced your files (Garmin or Athlon).">
+<option value="garmin">Garmin Xero C1 Pro</option>
+<option value="athlon">Athlon Rangecraft Velocity Pro</option>
+</select>
+</div>
+<div class="flex flex-wrap items-center gap-2">
+<label class="text-grt-soft text-xs md:text-sm font-semibold" for="unitSelect">
                                     Velocity unit in file:
                                 </label>
-                                <select
-                                    id="unitSelect"
-                                    class="px-2.5 py-1.5 rounded-lg bg-grt-panel-soft text-white text-xs md:text-sm border border-grt-frame focus:outline-none focus:ring-2 focus:ring-[var(--grt-accent)] focus:border-[var(--grt-accent)]">
-                                    <option value="imperial">Imperial (ft/s)</option>
-                                    <option value="metric">Metric (m/s)</option>
-                                </select>
-                                <span class="text-grt-subtle text-[11px] md:text-xs">
+<select class="px-2.5 py-1.5 rounded-lg bg-grt-panel-soft text-white text-xs md:text-sm border border-grt-frame focus:outline-none focus:ring-2 focus:ring-[var(--grt-accent)] focus:border-[var(--grt-accent)]" id="unitSelect" title="Set the velocity unit that matches your chronograph exports.">
+<option value="imperial">Imperial (ft/s)</option>
+<option value="metric">Metric (m/s)</option>
+</select>
+<span class="text-grt-subtle text-[11px] md:text-xs">
                                     GRT always receives m/s; we convert if needed.
                                 </span>
-                            </div>
-
-                            <div class="flex flex-wrap items-center gap-2">
-                                <label for="modeSelect" class="text-grt-soft text-xs md:text-sm font-semibold">
+</div>
+<div class="flex flex-wrap items-center gap-2">
+<label class="text-grt-soft text-xs md:text-sm font-semibold" for="modeSelect">
                                     Import mode:
                                 </label>
-                                <select
-                                    id="modeSelect"
-                                    class="px-2.5 py-1.5 rounded-lg bg-grt-panel-soft text-white text-xs md:text-sm border border-grt-frame focus:outline-none focus:ring-2 focus:ring-[var(--grt-accent)] focus:border-[var(--grt-accent)]">
-                                    <option value="normal">Standard (multi-file → Imported Measurement)</option>
-                                    <option value="ladder">Ladder (Charge 1–N → Imported Ladder)</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <!-- Standard multi-file panel -->
-                        <div id="multiFilePanel" class="flex flex-wrap items-center gap-3">
-                            <input type="file" id="garminInput" accept=".csv,.xls,.xlsx" multiple class="hidden">
-                            <button
-                                onclick="document.getElementById('garminInput').click()"
-                                class="px-5 py-2.5 bg-[var(--grt-accent)] hover:bg-[var(--grt-accent-soft)] text-white rounded-lg text-sm font-semibold shadow-md border border-grt-accent transition-transform transform hover:-translate-y-0.5 hover:shadow-lg">
-                                Select Chronograph Files
-                            </button>
-                            <span class="text-grt-subtle text-[11px] md:text-xs">
-                                Standard mode: all selected files become separate charges in “Imported Measurement”.
-                            </span>
-                        </div>
-
-                        <!-- Ladder panel -->
-                        <div id="ladderPanel" class="hidden mt-4 border border-grt-frame rounded-xl bg-grt-panel-soft p-3 md:p-4">
-                            <p class="text-grt-soft text-xs md:text-sm mb-3">
-                                Ladder mode: select one file per charge step. A new <strong>Imported Ladder</strong> tab
-                                is created; the original ladder measurement in your base file stays untouched.
-                            </p>
-
-                            <!-- Ladder state badge -->
-                            <div
-                                id="ladderStateBadge"
-                                class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full border border-grt-frame bg-grt-panel text-[11px] md:text-xs text-grt-subtle mb-3">
-                                <span class="h-1.5 w-1.5 rounded-full bg-slate-500"></span>
-                                <span>Base .grtload not loaded — ladder state unknown</span>
-                            </div>
-
-                            <!-- Hidden if ladder disabled in base -->
-                            <div id="ladderControls">
-                                <!-- Ladder steps / naming -->
-                                <div class="flex flex-col gap-2 mb-3">
-                                    <div class="flex flex-wrap items-center gap-2">
-                                        <label for="ladderStepsSelect" class="text-grt-soft text-xs md:text-sm font-semibold">
-                                            Loading Ladder Steps:
-                                        </label>
-                                        <select
-                                            id="ladderStepsSelect"
-                                            class="px-2.5 py-1.5 rounded-lg bg-grt-panel text-white text-xs md:text-sm border border-grt-frame focus:outline-none focus:ring-2 focus:ring-[var(--grt-accent)] focus:border-[var(--grt-accent)]">
-                                            <option value="2">2</option>
-                                            <option value="3">3</option>
-                                            <option value="4">4</option>
-                                            <option value="5">5</option>
-                                            <option value="6">6</option>
-                                            <option value="7">7</option>
-                                            <option value="8">8</option>
-                                            <option value="9">9</option>
-                                            <option value="10" selected>10</option>
-                                        </select>
-                                        <span class="text-grt-subtle text-[11px] md:text-xs">
-                                            Display only – actual steps from base ladder settings.
-                                        </span>
-                                    </div>
-
-                                    <div class="flex flex-wrap items-center gap-2">
-                                        <span class="text-grt-soft text-xs md:text-sm font-semibold">
-                                            Ladder charge names:
-                                        </span>
-                                        <select
-                                            id="ladderNameModeSelect"
-                                            class="px-2.5 py-1.5 rounded-lg bg-grt-panel text-white text-xs md:text-sm border border-grt-frame focus:outline-none focus:ring-2 focus:ring-[var(--grt-accent)] focus:border-[var(--grt-accent)]"
-                                        >
-                                            <option value="filename">Use file name</option>
-                                            <option value="charge">Use “Charge #”</option>
-                                        </select>
-                                        <span class="text-grt-subtle text-[11px] md:text-xs flex items-center gap-1">
-                                            <span>Preference is remembered.</span>
-                                            <span
-                                                class="inline-flex items-center justify-center h-4 w-4 rounded-full bg-grt-panel-soft border border-grt-frame text-[9px] cursor-help"
-                                                title="Controls how charges are named in GRT&#10;• Use file name: Imported Ladder shows charges named from the chronograph file (e.g. 284_Step1).&#10;• Use “Charge #”: Imported Ladder shows Charge 1, Charge 2, etc."
-                                            >
-                                                ?
-                                            </span>
-                                        </span>
-                                    </div>
-                                </div>
-
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
-                                    <!-- Charge 1 -->
-                                    <div id="ladderRow1" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 1</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput1" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput1').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel1" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 2 -->
-                                    <div id="ladderRow2" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 2</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput2" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput2').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel2" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 3 -->
-                                    <div id="ladderRow3" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 3</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput3" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput3').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel3" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 4 -->
-                                    <div id="ladderRow4" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 4</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput4" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput4').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel4" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 5 -->
-                                    <div id="ladderRow5" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 5</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput5" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput5').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel5" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 6 -->
-                                    <div id="ladderRow6" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 6</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput6" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput6').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel6" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 7 -->
-                                    <div id="ladderRow7" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 7</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput7" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput7').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel7" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 8 -->
-                                    <div id="ladderRow8" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 8</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput8" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput8').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel8" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 9 -->
-                                    <div id="ladderRow9" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 9</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput9" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput9').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel9" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                    <!-- Charge 10 -->
-                                    <div id="ladderRow10" class="flex items-center justify-between gap-2 text-xs md:text-sm">
-                                        <span class="text-grt-soft ladder-charge-label">Charge 10</span>
-                                        <div class="flex items-center gap-2">
-                                            <input type="file" id="ladderInput10" accept=".csv,.xls,.xlsx" class="hidden">
-                                            <button type="button"
-                                                onclick="document.getElementById('ladderInput10').click()"
-                                                class="px-2.5 py-1 bg-grt-panel hover:bg-grt-highlight text-white rounded-md border border-grt-frame text-[11px] md:text-xs">
-                                                Select File
-                                            </button>
-                                            <span id="ladderLabel10" class="text-grt-subtle text-[10px] md:text-[11px] truncate max-w-[120px] md:max-w-[160px]"></span>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div class="flex justify-end">
-                                    <button
-                                        id="processLadderBtn"
-                                        type="button"
-                                        class="px-4 py-2 bg-[var(--grt-accent)] hover:bg-[var(--grt-accent-soft)] text-white rounded-lg text-xs md:text-sm font-semibold shadow-md border border-grt-accent transition-transform transform hover:-translate-y-0.5 hover:shadow-lg">
-                                        Process Ladder
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                        <!-- /Ladder panel -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- What this tool does -->
-            <div class="bg-grt-panel-soft rounded-2xl border border-grt-frame p-4 md:p-5">
-                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                    <div>
-                        <h4 class="text-white font-semibold mb-1.5 text-sm md:text-base">
-                            💡 What this tool does
-                        </h4>
-                        <p class="text-grt-soft text-xs md:text-sm">
-                            Converts chronograph strings (Garmin Xero C1 Pro or Athlon Rangecraft Velocity Pro)
-                            into GRT measurements. Standard mode creates an <strong>Imported Measurement</strong> tab.
-                            Ladder mode creates an <strong>Imported Ladder</strong> tab using your ladder mc/step settings.
-                        </p>
-                    </div>
-                    <ul class="text-grt-soft text-xs md:text-sm space-y-0.5">
-                        <li>✅ Excel / CSV input</li>
-                        <li>✅ Robust header / column detection</li>
-                        <li>✅ Garmin + Athlon support</li>
-                        <li>✅ Manual metric / imperial selection (remembered)</li>
-                        <li>✅ GRT velocities in m/s (converted from ft/s if needed)</li>
-                        <li>✅ Notes: AVG-E / SD / ES / MIN / MAX / UNIT</li>
-                        <li>✅ Ladder mode: per-charge filenames or “Charge #” labels (remembered)</li>
-                        <li>✅ Base GRT configuration and ladder remain intact</li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-
-        <!-- Results -->
-        <div id="resultsArea" class="hidden space-y-5 md:space-y-6 mt-4">
-            <div class="bg-grt-panel rounded-2xl shadow-xl p-5 md:p-6 border border-grt-frame">
-                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-                    <h2 class="text-xl font-bold text-white">
-                        📊 Files Processed: <span id="fileCount">0</span>
-                    </h2>
-                    <div class="flex flex-wrap items-center gap-2">
-                        <span class="text-grt-subtle text-xs md:text-sm">Stats unit:</span>
-                        <span
-                            id="resultsUnit"
-                            class="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] md:text-xs font-semibold bg-grt-highlight text-grt-soft border border-grt-frame">
-                            &nbsp;
-                        </span>
-                    </div>
-                </div>
-                <div id="statsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
-            </div>
-
-            <div class="bg-grt-panel rounded-2xl shadow-xl p-5 md:p-6 border border-grt-frame">
-                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-                    <h2 class="text-xl font-bold text-white flex items-center gap-2">
-                        📄 GRT File (.grtload)
-                    </h2>
-                    <button
-                        onclick="downloadGRT()"
-                        class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold shadow-md border border-emerald-500/80 transition-transform transform hover:-translate-y-0.5 hover:shadow-lg">
-                        Download .grtload
-                    </button>
-                </div>
-                <div class="bg-emerald-950/70 border border-emerald-700/70 rounded-xl p-4">
-                    <h3 class="text-white font-semibold mb-2 text-sm md:text-base">✅ How to use in GRT</h3>
-                    <ol class="text-emerald-200 text-xs md:text-sm space-y-1.5 list-decimal list-inside">
-                        <li>Download the generated <code class="bg-emerald-900/70 px-1 rounded text-[11px]">.grtload</code> file.</li>
-                        <li>Open GRT and go to <strong>File → Open</strong>.</li>
-                        <li>Standard mode: use the <strong>Imported Measurement</strong> tab.</li>
-                        <li>Ladder mode: use the <strong>Imported Ladder</strong> tab; original ladder is unchanged.</li>
-                        <li>Check Notes for AVG-E / SD / ES / MIN / MAX and UNIT from the chronograph.</li>
-                    </ol>
-                </div>
-            </div>
-        </div>
-
-        <div class="mt-6 text-center text-grt-subtle text-[11px] md:text-xs">
-            <p>✅ Excel/CSV Support • ✅ Correct Decimals • ✅ Original Statistics Preserved • ✅ Multiple Files • ✅ Base GRT Configuration Intact</p>
-        </div>
-
-        <!-- Tiny About / Changelog -->
-        <div class="mt-2 text-center text-grt-subtle text-[10px] md:text-[11px]">
-            <span class="font-semibold">About / Changelog v.023:</span>
-            <span>
-                v.023 – Minor UI & code cleanup; behaviour unchanged from v.022.
-                v.022 – Ladder option added: use chronograph filenames or “Charge #” as charge names in Imported Ladder (remembered).
-                v.021 – Imported Ladder charges used chronograph filenames instead of “Charge N”.
-                v.020 – Fix ladder charge mass scaling (mc g → charge kg) so GRT grains read correctly; removed “Rifle Bullet *” remapping.
-                v.019 – Ladder panel labels kept as “Charge 1…”; separate Imported Ladder tab.
-                v.018 – Initial public ladder & Athlon support.
-            </span>
-        </div>
-
-        <!-- Footer -->
-        <div class="mt-4 mb-2 flex justify-center">
-            <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-grt-highlight border border-grt-accent shadow-lg">
-                <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span class="text-[11px] md:text-xs text-grt-soft tracking-wide uppercase">
-                    Made for GRT group
-                </span>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        // ----------------------
-        // Constants / state
-        // ----------------------
-        const VELOCITY_MIN = 200;
-        const VELOCITY_MAX = 5000;
-        const HEADER_SCAN_ROWS = 15;
-        const CSV_HEADER_SCAN_LINES = 8;
-        const HEADER_PATTERNS = [
-            'velocity', 'velocit', 'vel', 'm/s', 'ft/s', 'fps', 'mps'
-        ];
-
-        let grtBaseContent = null;
-        let outputXML = '';
-        let allStats = [];
-
-        let unit = 'imperial';
-        let chronographType = 'garmin';
-        let mode = 'normal';
-
-        let ladderNameMode = 'filename';
-
-        let ladderSteps = 10;
-        let grtLadderSteps = null;
-        let ladderDisabled = false;
-
-        let defaultMcValue = '0.002';
-        let ladderStepMassG = null;
-
-        const ladderSlots = new Array(10).fill(null);
-
-        function unitLabel() {
-            return unit === 'imperial' ? 'ft/s' : 'm/s';
-        }
-
-        function fpsToMps(v) {
-            return v / 3.28084;
-        }
-
-        function parseNumber(value) {
-            if (value === undefined || value === null) return NaN;
-            return parseFloat(String(value).replace(',', '.'));
-        }
-
-        function isValidNumber(value) {
-            return typeof value === 'number' && !isNaN(value);
-        }
-
-        function computeStats(velocities) {
-            if (!velocities.length) {
-                throw new Error('No valid velocity data found');
-            }
-            const count = velocities.length;
-            const mean = velocities.reduce((a, b) => a + b, 0) / count;
-            const variance = velocities.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / count;
-            const sd = Math.sqrt(variance);
-            const min = Math.min(...velocities);
-            const max = Math.max(...velocities);
-            const es = max - min;
-            return { count, mean, sd, min, max, es };
-        }
-
-        // Floating toast-style status messages
-        function showStatus(type, message) {
-            const area = document.getElementById('statusArea');
-            if (!area) return;
-
-            const colors = {
-                loading: 'bg-blue-950/80 border-blue-700 text-blue-100',
-                error: 'bg-red-950/85 border-red-700 text-red-100',
-                success: 'bg-emerald-950/80 border-emerald-700 text-emerald-100'
-            };
-            const icons = {
-                loading: '⏳',
-                error: '⚠️',
-                success: '✅'
-            };
-
-            const toast = document.createElement('div');
-            toast.className =
-                (colors[type] || colors.loading) +
-                ' border rounded-xl px-3 py-2 shadow-lg flex items-start gap-2 text-xs md:text-sm pointer-events-auto transform transition ease-out duration-200 translate-y-0 opacity-100';
-
-            toast.innerHTML = `
-                <div class="text-base leading-none pt-0.5">${icons[type] || ''}</div>
-                <div>${message}</div>
-            `;
-
-            area.appendChild(toast);
-
-            // Auto-hide after 5s with fade-out
-            setTimeout(() => {
-                toast.classList.add('opacity-0', 'translate-y-2');
-                setTimeout(() => {
-                    if (toast.parentNode === area) {
-                        area.removeChild(toast);
-                    }
-                }, 250);
-            }, 5000);
-        }
-
-        function updateLadderRowsVisibility() {
-            for (let i = 1; i <= 10; i++) {
-                const row = document.getElementById('ladderRow' + i);
-                if (!row) continue;
-                if (i <= ladderSteps) {
-                    row.classList.remove('hidden');
-                } else {
-                    row.classList.add('hidden');
-                    ladderSlots[i - 1] = null;
-                    const lab = document.getElementById('ladderLabel' + i);
-                    const inp = document.getElementById('ladderInput' + i);
-                    if (lab) lab.textContent = '';
-                    if (inp) inp.value = '';
-                }
-            }
-        }
-
-        // Shows Charge N (xx.xx gr) in ladder panel when ladder info is available
-        function updateLadderChargeValueLabels() {
-            const labels = document.querySelectorAll('.ladder-charge-label');
-            const mcG = getMcG();
-
-            const totalSteps =
-                (typeof grtLadderSteps === 'number' && grtLadderSteps >= 2 && grtLadderSteps <= 10)
-                    ? grtLadderSteps
-                    : ladderSteps;
-
-            const stepG =
-                (typeof ladderStepMassG === 'number' && ladderStepMassG > 0)
-                    ? ladderStepMassG
-                    : null;
-
-            labels.forEach((el, idx) => {
-                const chargeIndex = idx + 1;
-                const baseLabel = 'Charge ' + chargeIndex;
-
-                if (stepG && totalSteps >= 2 && chargeIndex <= totalSteps) {
-                    const massG = mcG - (totalSteps - chargeIndex) * stepG;
-                    const massGrains = massG * 15.43236; // g → grains
-
-                    if (isFinite(massGrains)) {
-                        el.textContent = `${baseLabel} (${massGrains.toFixed(2)} gr)`;
-                    } else {
-                        el.textContent = baseLabel;
-                    }
-                } else {
-                    el.textContent = baseLabel;
-                }
-            });
-        }
-
-        function updateLadderStateBadge() {
-            const badge = document.getElementById('ladderStateBadge');
-            if (!badge) return;
-
-            let dotClass = 'bg-slate-500';
-            let text = 'Base .grtload not loaded — ladder state unknown';
-
-            if (!grtBaseContent) {
-                dotClass = 'bg-slate-500';
-                text = 'Base .grtload not loaded — ladder state unknown';
-            } else if (ladderDisabled) {
-                dotClass = 'bg-red-500';
-                text = 'Loading Ladder disabled in base .grtload (laddercnt = 1)';
-            } else if (typeof grtLadderSteps === 'number' && grtLadderSteps >= 2 && grtLadderSteps <= 10) {
-                dotClass = 'bg-emerald-400';
-                text = 'Loading Ladder enabled in base .grtload (' + grtLadderSteps + ' steps)';
-            } else {
-                dotClass = 'bg-amber-400';
-                text = 'Ladder configuration not found — using UI steps only';
-            }
-
-            badge.innerHTML = `
-                <span class="h-1.5 w-1.5 rounded-full ${dotClass}"></span>
-                <span>${text}</span>
-            `;
-        }
-
-        function updateLadderControlsVisibility() {
-            const controls = document.getElementById('ladderControls');
-            if (!controls) return;
-            if (ladderDisabled && mode === 'ladder') {
-                controls.classList.add('hidden');
-            } else {
-                controls.classList.remove('hidden');
-            }
-        }
-
-        function getMcG() {
-            let v = parseFloat(defaultMcValue);
-            if (!isFinite(v) || v <= 0) return 3.0;
-            if (v < 0.05) {
-                return v * 1000;
-            }
-            return v;
-        }
-
-        function resetSession() {
-            grtBaseContent = null;
-            outputXML = '';
-            allStats = [];
-            defaultMcValue = '0.002';
-            ladderStepMassG = null;
-            grtLadderSteps = null;
-            ladderDisabled = false;
-            ladderSteps = 10;
-            for (let i = 0; i < 10; i++) ladderSlots[i] = null;
-
-            document.getElementById('uploadArea').classList.remove('hidden');
-            document.getElementById('resultsArea').classList.add('hidden');
-            document.getElementById('statusArea').innerHTML = '';
-            document.getElementById('fileCount').textContent = '0';
-            document.getElementById('statsGrid').innerHTML = '';
-            document.getElementById('resultsUnit').textContent = '';
-
-            for (let i = 1; i <= 10; i++) {
-                const lab = document.getElementById('ladderLabel' + i);
-                const inp = document.getElementById('ladderInput' + i);
-                const row = document.getElementById('ladderRow' + i);
-                if (lab) lab.textContent = '';
-                if (inp) inp.value = '';
-                if (row) row.classList.remove('hidden');
-            }
-
-            const ladderStepsSelect = document.getElementById('ladderStepsSelect');
-            if (ladderStepsSelect) ladderStepsSelect.value = '10';
-            updateLadderRowsVisibility();
-            updateLadderChargeValueLabels();
-            updateLadderStateBadge();
-            updateLadderControlsVisibility();
-
-            const unitSelect = document.getElementById('unitSelect');
-            const deviceSelect = document.getElementById('deviceSelect');
-            const modeSelect = document.getElementById('modeSelect');
-            const ladderNameSelect = document.getElementById('ladderNameModeSelect');
-
-            let savedUnit = null;
-            let savedDevice = null;
-            let savedNameMode = null;
-            try {
-                savedUnit = localStorage.getItem('xqa_unit');
-                savedDevice = localStorage.getItem('xqa_device');
-                savedNameMode = localStorage.getItem('xqa_ladderNameMode');
-            } catch (e) {}
-
-            unit = (savedUnit === 'metric' || savedUnit === 'imperial') ? savedUnit : 'imperial';
-            if (unitSelect) unitSelect.value = unit;
-
-            chronographType = (savedDevice === 'garmin' || savedDevice === 'athlon') ? savedDevice : 'garmin';
-            if (deviceSelect) deviceSelect.value = chronographType;
-
-            ladderNameMode = (savedNameMode === 'charge' || savedNameMode === 'filename') ? savedNameMode : 'filename';
-            if (ladderNameSelect) ladderNameSelect.value = ladderNameMode;
-
-            mode = 'normal';
-            if (modeSelect) modeSelect.value = 'normal';
-            updateModeUI();
-
-            const grtBaseBtn = document.getElementById('grtBaseBtn');
-            const grtBaseStatus = document.getElementById('grtBaseStatus');
-            const grtBaseInput = document.getElementById('grtBaseInput');
-            if (grtBaseBtn) {
-                grtBaseBtn.className =
-                    'px-4 py-2 bg-grt-panel-soft hover:bg-grt-highlight text-white rounded-lg text-sm font-medium border border-grt-frame shadow-sm transition-colors';
-            }
-            if (grtBaseStatus) grtBaseStatus.textContent = '';
-            if (grtBaseInput) grtBaseInput.value = '';
-
-            const garminInput = document.getElementById('garminInput');
-            if (garminInput) garminInput.value = '';
-
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-        }
-
-        function extractDefaultMcValue() {
-            defaultMcValue = '0.002';
-            ladderStepMassG = null;
-            grtLadderSteps = null;
-            ladderDisabled = false;
-
-            if (!grtBaseContent) {
-                updateLadderChargeValueLabels();
-                updateLadderStateBadge();
-                updateLadderControlsVisibility();
-                return;
-            }
-
-            try {
-                const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(grtBaseContent, 'application/xml');
-                const inner = xmlDoc.querySelector('InnerBallistikInput') || xmlDoc;
-
-                const mcInput = inner.querySelector('propellant input[name="mc"]');
-                if (mcInput) {
-                    const val = mcInput.getAttribute('value') || '';
-                    if (val) defaultMcValue = val;
-                }
-
-                const ladderCntInput = inner.querySelector('input[name="laddercnt"]');
-                if (ladderCntInput) {
-                    const val = parseInt(ladderCntInput.getAttribute('value') || '0', 10);
-                    if (!isNaN(val)) {
-                        if (val >= 2 && val <= 10) {
-                            grtLadderSteps = val;
-                            ladderSteps = val;
-                            ladderDisabled = false;
-                            const ladderStepsSelect = document.getElementById('ladderStepsSelect');
-                            if (ladderStepsSelect) ladderStepsSelect.value = String(ladderSteps);
-                            updateLadderRowsVisibility();
-                        } else if (val === 1) {
-                            grtLadderSteps = 1;
-                            ladderDisabled = true;
-                        }
-                    }
-                }
-
-                const ladderMcInput = inner.querySelector('input[name="laddermc"]');
-                if (ladderMcInput) {
-                    const val = parseFloat(ladderMcInput.getAttribute('value') || '');
-                    if (!isNaN(val) && val > 0) {
-                        ladderStepMassG = val;
-                    }
-                }
-            } catch (err) {
-                // ignore parse errors; fallback defaults will be used
-            }
-
-            updateLadderChargeValueLabels();
-            updateLadderStateBadge();
-            updateLadderControlsVisibility();
-        }
-
-        function updateModeUI() {
-            const multiPanel = document.getElementById('multiFilePanel');
-            const ladderPanel = document.getElementById('ladderPanel');
-            const processBtn = document.getElementById('processLadderBtn');
-            if (!multiPanel || !ladderPanel) return;
-
-            if (mode === 'ladder') {
-                multiPanel.classList.add('hidden');
-                ladderPanel.classList.remove('hidden');
-                updateLadderRowsVisibility();
-                updateLadderChargeValueLabels();
-                updateLadderStateBadge();
-                updateLadderControlsVisibility();
-                if (processBtn) {
-                    processBtn.disabled = false;
-                    processBtn.classList.remove('opacity-60', 'cursor-not-allowed');
-                }
-            } else {
-                multiPanel.classList.remove('hidden');
-                ladderPanel.classList.add('hidden');
-                if (processBtn) {
-                    processBtn.disabled = false;
-                    processBtn.classList.remove('opacity-60', 'cursor-not-allowed');
-                }
-            }
-        }
-
-        (function initUnitSelect() {
-            const unitSelect = document.getElementById('unitSelect');
-            if (!unitSelect) return;
-            let savedUnit = null;
-            try {
-                savedUnit = localStorage.getItem('xqa_unit');
-            } catch (e) {}
-            unit = (savedUnit === 'metric' || savedUnit === 'imperial') ? savedUnit : 'imperial';
-            unitSelect.value = unit;
-            unitSelect.addEventListener('change', (e) => {
-                unit = e.target.value;
-                try {
-                    localStorage.setItem('xqa_unit', unit);
-                } catch (err) {}
-            });
-        })();
-
-        (function initDeviceSelect() {
-            const deviceSelect = document.getElementById('deviceSelect');
-            if (!deviceSelect) return;
-            let savedDevice = null;
-            try {
-                savedDevice = localStorage.getItem('xqa_device');
-            } catch (e) {}
-            chronographType = (savedDevice === 'garmin' || savedDevice === 'athlon') ? savedDevice : 'garmin';
-            deviceSelect.value = chronographType;
-            deviceSelect.addEventListener('change', (e) => {
-                chronographType = e.target.value;
-                try {
-                    localStorage.setItem('xqa_device', chronographType);
-                } catch (err) {}
-            });
-        })();
-
-        (function initModeSelect() {
-            const modeSelect = document.getElementById('modeSelect');
-            if (!modeSelect) return;
-            mode = modeSelect.value || 'normal';
-            updateModeUI();
-            modeSelect.addEventListener('change', (e) => {
-                mode = e.target.value || 'normal';
-                updateModeUI();
-            });
-        })();
-
-        (function initLadderStepsSelect() {
-            const ladderStepsSelect = document.getElementById('ladderStepsSelect');
-            if (!ladderStepsSelect) return;
-            ladderStepsSelect.value = String(ladderSteps);
-            ladderStepsSelect.addEventListener('change', (e) => {
-                const n = parseInt(e.target.value, 10);
-                ladderSteps = (!isNaN(n) && n >= 2 && n <= 10) ? n : 10;
-                updateLadderRowsVisibility();
-                updateLadderChargeValueLabels();
-            });
-            updateLadderRowsVisibility();
-            updateLadderChargeValueLabels();
-            updateLadderStateBadge();
-            updateLadderControlsVisibility();
-        })();
-
-        (function initLadderNameMode() {
-            const select = document.getElementById('ladderNameModeSelect');
-            if (!select) return;
-            let saved = null;
-            try {
-                saved = localStorage.getItem('xqa_ladderNameMode');
-            } catch (e) {}
-            ladderNameMode = (saved === 'charge' || saved === 'filename') ? saved : 'filename';
-            select.value = ladderNameMode;
-            select.addEventListener('change', (e) => {
-                ladderNameMode = e.target.value;
-                try {
-                    localStorage.setItem('xqa_ladderNameMode', ladderNameMode);
-                } catch (err) {}
-            });
-        })();
-
-        document.getElementById('newSessionBtn').addEventListener('click', resetSession);
-
-        document.getElementById('grtBaseInput').addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = (ev) => {
-                grtBaseContent = ev.target.result;
-                const statusEl = document.getElementById('grtBaseStatus');
-                const btnEl = document.getElementById('grtBaseBtn');
-                if (statusEl) statusEl.textContent = '✓ ' + file.name;
-                if (btnEl) {
-                    btnEl.className =
-                        'px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm font-medium border border-green-500 shadow-sm transition-colors';
-                }
-                extractDefaultMcValue();
-                showStatus('success', 'Base .grtload loaded.');
-            };
-            reader.readAsText(file);
-        });
-
-        document.getElementById('garminInput').addEventListener('change', (e) => {
-            if (mode !== 'normal') return;
-            const files = Array.from(e.target.files);
-            if (!files.length) return;
-
-            showStatus('loading', 'Processing chronograph files and computing statistics…');
-            allStats = [];
-            let filesProcessed = 0;
-
-            files.forEach((file) => {
-                const isExcel = file.name.endsWith('.xls') || file.name.endsWith('.xlsx');
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    try {
-                        let stats;
-                        if (isExcel) {
-                            stats = (chronographType === 'athlon')
-                                ? processAthlonExcel(ev.target.result)
-                                : processExcel(ev.target.result);
-                        } else {
-                            stats = processCSV(ev.target.result);
-                        }
-                        allStats.push({
-                            stats,
-                            filename: file.name,
-                            chargeIndex: null
-                        });
-                        filesProcessed++;
-                        if (filesProcessed === files.length) {
-                            generateOutput();
-                            showResults();
-                            showStatus('success', 'All files processed and merged into the GRT project.');
-                        }
-                    } catch (err) {
-                        showStatus('error', 'Error in file ' + file.name + ': ' + err.message);
-                    }
-                };
-                if (isExcel) reader.readAsArrayBuffer(file);
-                else reader.readAsText(file);
-            });
-        });
-
-        for (let n = 1; n <= 10; n++) {
-            const input = document.getElementById('ladderInput' + n);
-            if (!input) continue;
-            input.addEventListener('change', (e) => {
-                if (mode !== 'ladder' || ladderDisabled) return;
-                const file = e.target.files[0];
-                const label = document.getElementById('ladderLabel' + n);
-
-                ladderSlots[n - 1] = null;
-                if (label) label.textContent = file ? file.name : '';
-                if (!file) return;
-
-                const uiSteps = ladderSteps || 10;
-                if (n > uiSteps) {
-                    showStatus('error', 'Charge ' + n + ' is above the configured ladder steps display (' + uiSteps + ').');
-                    return;
-                }
-
-                showStatus('loading', 'Processing ladder file for Charge ' + n + '…');
-
-                const isExcel = file.name.endsWith('.xls') || file.name.endsWith('.xlsx');
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    try {
-                        let stats;
-                        if (isExcel) {
-                            stats = (chronographType === 'athlon')
-                                ? processAthlonExcel(ev.target.result)
-                                : processExcel(ev.target.result);
-                        } else {
-                            stats = processCSV(ev.target.result);
-                        }
-
-                        ladderSlots[n - 1] = {
-                            stats,
-                            filename: file.name,
-                            chargeIndex: n
-                        };
-
-                        if (label) label.textContent = file.name;
-
-                        showStatus(
-                            'success',
-                            'Charge ' + n + ' file processed. When ready, click “Process Ladder” to update the GRT project.'
-                        );
-                    } catch (err) {
-                        ladderSlots[n - 1] = null;
-                        showStatus(
-                            'error',
-                            'Error in Charge ' + n + ' file: ' + err.message
-                        );
-                    }
-                };
-                if (isExcel) reader.readAsArrayBuffer(file);
-                else reader.readAsText(file);
-            });
-        }
-
-        const processLadderBtn = document.getElementById('processLadderBtn');
-        if (processLadderBtn) {
-            processLadderBtn.addEventListener('click', () => {
-                if (mode !== 'ladder' || ladderDisabled) return;
-
-                const selected = ladderSlots
-                    .map((slot, idx) => slot ? { ...slot, chargeIndex: idx + 1 } : null)
-                    .filter(Boolean);
-
-                if (selected.length < 2) {
-                    showStatus(
-                        'error',
-                        'Ladder mode requires at least 2 charges with files selected before processing.'
-                    );
-                    return;
-                }
-                if (!grtBaseContent) {
-                    showStatus(
-                        'error',
-                        'Ladder mode requires a base .grtload file so charges can be matched by ladder settings.'
-                    );
-                    return;
-                }
-
-                allStats = selected;
-                generateOutput();
-                showResults();
-                showStatus(
-                    'success',
-                    'Ladder charges imported into a new “Imported Ladder” tab in the GRT project.'
-                );
-            });
-        }
-
-        function processExcel(arrayBuffer) {
-            const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-            const rows = XLSX.utils.sheet_to_json(firstSheet, {
-                header: 1,
-                raw: false,
-                defval: ''
-            });
-
-            if (!rows || !rows.length) {
-                throw new Error('Empty or unreadable sheet');
-            }
-
-            let headerRowIndex = -1;
-            let velocityColIndex = 1;
-
-            outer:
-            for (let i = 0; i < Math.min(HEADER_SCAN_ROWS, rows.length); i++) {
-                const row = rows[i];
-                if (!row) continue;
-                for (let c = 0; c < row.length; c++) {
-                    const cell = String(row[c] || '').toLowerCase();
-                    if (HEADER_PATTERNS.some(p => cell.includes(p))) {
-                        headerRowIndex = i;
-                        velocityColIndex = c;
-                        break outer;
-                    }
-                }
-            }
-
-            if (headerRowIndex === -1) {
-                velocityColIndex = 1;
-                let firstNumericRow = -1;
-                for (let i = 0; i < rows.length; i++) {
-                    const row = rows[i];
-                    if (!row) continue;
-                    const num = parseNumber(row[1]);
-                    if (!isNaN(num) && num > VELOCITY_MIN && num < VELOCITY_MAX) {
-                        firstNumericRow = i;
-                        break;
-                    }
-                }
-                if (firstNumericRow === -1) {
-                    throw new Error('No valid velocity data found in column B');
-                }
-                headerRowIndex = Math.max(0, firstNumericRow - 1);
-            }
-
-            const velocities = [];
-            const garminStats = {
-                avg: null, sd: null, es: null, min: null, max: null,
-                powerFactorAvg: null, energyAvg: null
-            };
-
-            for (let i = headerRowIndex + 1; i < rows.length; i++) {
-                const row = rows[i];
-                if (!row) continue;
-
-                const label = String(row[0] || '').toLowerCase().trim();
-                const valueCell = row[velocityColIndex];
-                const num = parseNumber(valueCell);
-
-                if (label.includes('avg') || label.includes('average') || label.includes('mean')) {
-                    garminStats.avg = num;
-                    continue;
-                }
-                if (label.includes('sd') || label.includes('standard deviation')) {
-                    garminStats.sd = num;
-                    continue;
-                }
-                if (label.includes('es') || label.includes('extreme spread')) {
-                    garminStats.es = num;
-                    continue;
-                }
-                if (label.includes('min') && !label.includes('admin')) {
-                    garminStats.min = num;
-                    continue;
-                }
-                if (label.includes('max') && !label.includes('maxi')) {
-                    garminStats.max = num;
-                    continue;
-                }
-                if (label.includes('power factor')) {
-                    garminStats.powerFactorAvg = String(valueCell || '').trim();
-                    continue;
-                }
-                if (label.includes('energy')) {
-                    garminStats.energyAvg = String(valueCell || '').trim();
-                    continue;
-                }
-
-                if (!isNaN(num) && num > VELOCITY_MIN && num < VELOCITY_MAX) {
-                    velocities.push(num);
-                }
-            }
-
-            const stats = computeStats(velocities);
-
-            if (!isValidNumber(garminStats.avg)) garminStats.avg = stats.mean;
-            if (!isValidNumber(garminStats.sd)) garminStats.sd = stats.sd;
-            if (!isValidNumber(garminStats.es)) garminStats.es = stats.es;
-            if (!isValidNumber(garminStats.min)) garminStats.min = stats.min;
-            if (!isValidNumber(garminStats.max)) garminStats.max = stats.max;
-
-            return { ...stats, velocities, garminStats };
-        }
-
-        function processAthlonExcel(arrayBuffer) {
-            const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-            const rows = XLSX.utils.sheet_to_json(firstSheet, {
-                header: 1,
-                raw: false,
-                defval: ''
-            });
-
-            if (!rows || !rows.length) {
-                throw new Error('Empty or unreadable Athlon sheet');
-            }
-
-            let headerRowIndex = -1;
-            let speedColIndex = -1;
-
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i] || [];
-                const lower = row.map(v => String(v || '').trim().toLowerCase());
-                if (lower[0].includes('shot #') && lower.some(c => c.includes('speed'))) {
-                    headerRowIndex = i;
-                    speedColIndex = lower.findIndex(c => c.includes('speed'));
-                    break;
-                }
-            }
-
-            if (headerRowIndex === -1 || speedColIndex === -1) {
-                throw new Error('Could not locate Athlon shot table header');
-            }
-
-            const velocities = [];
-            for (let i = headerRowIndex + 1; i < rows.length; i++) {
-                const row = rows[i] || [];
-                const first = String(row[0] || '').trim();
-                if (!first) break;
-                const shotNum = parseFloat(first.replace(',', '.'));
-                if (isNaN(shotNum)) break;
-                const cell = row[speedColIndex];
-                const v = parseNumber(cell);
-                if (!isNaN(v) && v > VELOCITY_MIN && v < VELOCITY_MAX) {
-                    velocities.push(v);
-                }
-            }
-
-            if (!velocities.length) {
-                throw new Error('No valid Athlon velocity data found');
-            }
-
-            const garminStats = {
-                avg: null, sd: null, es: null, min: null, max: null,
-                powerFactorAvg: null, energyAvg: null
-            };
-
-            function numFromText(text) {
-                const cleaned = String(text || '')
-                    .replace(/[^0-9,.\-]/g, '')
-                    .replace(',', '.');
-                const num = parseFloat(cleaned);
-                return isNaN(num) ? null : num;
-            }
-
-            rows.forEach(row => {
-                row = row || [];
-                const label = String(row[0] || '').trim().toLowerCase();
-                const val = row.length > 1 ? row[1] : '';
-                if (!label) return;
-
-                if (label.startsWith('average velocity')) {
-                    garminStats.avg = numFromText(val);
-                } else if (label.startsWith('minimum velocity')) {
-                    garminStats.min = numFromText(val);
-                } else if (label.startsWith('maximum velocity')) {
-                    garminStats.max = numFromText(val);
-                } else if (label.startsWith('standard deviation')) {
-                    garminStats.sd = numFromText(val);
-                } else if (label.startsWith('extreme spread')) {
-                    garminStats.es = numFromText(val);
-                } else if (label.startsWith('average power factor')) {
-                    garminStats.powerFactorAvg = String(val || '').trim();
-                } else if (label.startsWith('average kinetic energy')) {
-                    garminStats.energyAvg = String(val || '').trim();
-                }
-            });
-
-            const stats = computeStats(velocities);
-
-            if (!isValidNumber(garminStats.avg)) garminStats.avg = stats.mean;
-            if (!isValidNumber(garminStats.sd)) garminStats.sd = stats.sd;
-            if (!isValidNumber(garminStats.es)) garminStats.es = stats.es;
-            if (!isValidNumber(garminStats.min)) garminStats.min = stats.min;
-            if (!isValidNumber(garminStats.max)) garminStats.max = stats.max;
-
-            return { ...stats, velocities, garminStats };
-        }
-
-        function processCSV(csvText) {
-            const lines = csvText.trim().split('\n');
-            if (!lines.length) throw new Error('Empty or unreadable CSV');
-            const firstLine = lines[0];
-            const delimiter = firstLine.includes(';') ? ';' : ',';
-
-            let headerLineIdx = -1;
-            let velocityColIndex = 1;
-
-            outer:
-            for (let i = 0; i < Math.min(CSV_HEADER_SCAN_LINES, lines.length); i++) {
-                const parts = lines[i].split(delimiter);
-                for (let c = 0; c < parts.length; c++) {
-                    const cell = parts[c].toLowerCase();
-                    if (HEADER_PATTERNS.some(p => cell.includes(p))) {
-                        headerLineIdx = i;
-                        velocityColIndex = c;
-                        break outer;
-                    }
-                }
-            }
-
-            if (headerLineIdx === -1) {
-                let firstNumericLine = -1;
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i].trim();
-                    if (!line) continue;
-                    const values = line.split(delimiter);
-                    if (values.length < 2) continue;
-                    const num = parseNumber(values[1]);
-                    if (!isNaN(num) && num > VELOCITY_MIN && num < VELOCITY_MAX) {
-                        firstNumericLine = i;
-                        break;
-                    }
-                }
-                if (firstNumericLine === -1) {
-                    throw new Error('No valid velocity data found');
-                }
-                headerLineIdx = Math.max(0, firstNumericLine - 1);
-            }
-
-            const velocities = [];
-            const garminStats = { avg: null, sd: null, es: null, min: null, max: null };
-
-            for (let i = headerLineIdx + 1; i < lines.length; i++) {
-                const line = lines[i].trim();
-                if (!line) continue;
-                const values = line.split(delimiter);
-                const firstCol = values[0] ? values[0].toLowerCase().trim() : '';
-
-                if (firstCol.includes('avg') || firstCol.includes('average') || firstCol.includes('mean')) {
-                    garminStats.avg = parseNumber(values[1]);
-                    continue;
-                }
-                if (firstCol.includes('sd')) {
-                    garminStats.sd = parseNumber(values[1]);
-                    continue;
-                }
-                if (firstCol.includes('es')) {
-                    garminStats.es = parseNumber(values[1]);
-                    continue;
-                }
-                if (firstCol.includes('min')) {
-                    garminStats.min = parseNumber(values[1]);
-                    continue;
-                }
-                if (firstCol.includes('max')) {
-                    garminStats.max = parseNumber(values[1]);
-                    continue;
-                }
-
-                const velocity = parseNumber(values[velocityColIndex]);
-                if (!isNaN(velocity) && velocity > VELOCITY_MIN && velocity < VELOCITY_MAX) {
-                    velocities.push(velocity);
-                }
-            }
-
-            const stats = computeStats(velocities);
-
-            if (!isValidNumber(garminStats.avg)) garminStats.avg = stats.mean;
-            if (!isValidNumber(garminStats.sd)) garminStats.sd = stats.sd;
-            if (!isValidNumber(garminStats.es)) garminStats.es = stats.es;
-            if (!isValidNumber(garminStats.min)) garminStats.min = stats.min;
-            if (!isValidNumber(garminStats.max)) garminStats.max = stats.max;
-
-            return { ...stats, velocities, garminStats };
-        }
-
-        function getNextMeasurementIndex(inner) {
-            const re = /Measurement index="(\d+)"/g;
-            let max = 0;
-            let m;
-            while ((m = re.exec(inner)) !== null) {
-                const val = parseInt(m[1], 10);
-                if (!isNaN(val) && val > max) max = val;
-            }
-            return max + 1;
-        }
-
-        function stripExistingImported(inner, titleEncoded) {
-            const re = new RegExp(
-                `<Measurement[^>]*title="${titleEncoded}"[\\s\\S]*?<\\/Measurement>`,
-                'g'
-            );
-            return inner.replace(re, '');
-        }
-
-        function generateChargeXML(item, opts) {
-            const s = item.stats;
-            const chargeIndex = opts.chargeIndex || 1;
-            const modeLocal = opts.mode || 'standard';
-
-            const velocitiesSource = s.velocities || [];
-            const velocitiesMs = (unit === 'imperial')
-                ? velocitiesSource.map(v => fpsToMps(v))
-                : velocitiesSource.slice();
-
-            const avgFileUnit = isValidNumber(s.garminStats.avg) ? s.garminStats.avg : s.mean;
-            const sdFileUnit  = isValidNumber(s.garminStats.sd)  ? s.garminStats.sd  : s.sd;
-            const esFileUnit  = isValidNumber(s.garminStats.es)  ? s.garminStats.es  : s.es;
-            const minFileUnit = isValidNumber(s.garminStats.min) ? s.garminStats.min : s.min;
-            const maxFileUnit = isValidNumber(s.garminStats.max) ? s.garminStats.max : s.max;
-
-            function fmt(x) {
-                return (typeof x === 'number' && isFinite(x)) ? x.toFixed(1) : '';
-            }
-
-            const notes = [];
-            const avgLabel = 'AVG-E=';
-            if (isFinite(avgFileUnit)) notes.push(avgLabel + fmt(avgFileUnit));
-            if (isFinite(sdFileUnit))  notes.push('SD=' + fmt(sdFileUnit));
-            if (isFinite(esFileUnit))  notes.push('ES=' + fmt(esFileUnit));
-            if (isFinite(minFileUnit)) notes.push('MIN=' + fmt(minFileUnit));
-            if (isFinite(maxFileUnit)) notes.push('MAX=' + fmt(maxFileUnit));
-
-            if (s.garminStats.powerFactorAvg) {
-                notes.push('POWER%20FACTOR=' + String(s.garminStats.powerFactorAvg).replace(/\s+/g, '%20'));
-            }
-            if (s.garminStats.energyAvg) {
-                notes.push('ENERGY=' + String(s.garminStats.energyAvg).replace(/\s+/g, '%20'));
-            }
-            notes.push('UNIT=' + (unit === 'imperial' ? 'ft/s' : 'm/s'));
-            const noteAttr = notes.join('%20');
-
-            const mcG = getMcG();
-            let valueKg;
-
-            if (modeLocal === 'ladder') {
-                const totalSteps =
-                    (typeof grtLadderSteps === 'number' && grtLadderSteps >= 2 && grtLadderSteps <= 10)
-                        ? grtLadderSteps
-                        : (ladderSteps || 10);
-
-                const stepG = (typeof ladderStepMassG === 'number' && ladderStepMassG > 0)
-                    ? ladderStepMassG
-                    : 0;
-
-                if (stepG > 0 && totalSteps >= 2) {
-                    const massG = mcG - (totalSteps - chargeIndex) * stepG;
-                    valueKg = massG / 1000;
-                } else {
-                    valueKg = mcG / 1000;
-                }
-            } else {
-                valueKg = mcG / 1000;
-            }
-
-            if (!isFinite(valueKg) || valueKg <= 0) valueKg = 0.002;
-
-            let chargeName;
-            if (modeLocal === 'ladder') {
-                if (ladderNameMode === 'charge') {
-                    const label = 'Charge ' + chargeIndex;
-                    chargeName = encodeURIComponent(label);
-                } else {
-                    const baseName = (item.filename || ('Charge ' + chargeIndex))
-                        .replace(/\.(csv|xls|xlsx)$/i, '')
-                        .replace(/_/g, ' ');
-                    chargeName = encodeURIComponent(baseName);
-                }
-            } else {
-                const baseName = (item.filename || 'Charge')
-                    .replace(/\.(csv|xls|xlsx)$/i, '')
-                    .replace(/_/g, ' ');
-                chargeName = encodeURIComponent(baseName);
-            }
-
-            let xml = `        <charge name="${chargeName}" showinreport="true" expanded="true" expandedstats="true" note="${noteAttr}" value="${valueKg.toFixed(12)}" source="Chronograph%20Import">\n`;
-            velocitiesMs.forEach((v) => {
-                if (!isFinite(v)) return;
-                xml += `          <shot name="" velocity="${v.toFixed(1)}" pressure="0" />\n`;
-            });
-            xml += '        </charge>\n';
-            return xml;
-        }
-
-        function generateImportedMeasurementXML(inner) {
-            let updatedInner = stripExistingImported(inner, 'Imported%20Measurement');
-            const idx = getNextMeasurementIndex(updatedInner);
-            let xml = `      <Measurement index="${idx}" showinreport="true" title="Imported%20Measurement">\n`;
-            allStats.forEach((item, i) => {
-                xml += generateChargeXML(item, {
-                    mode: 'standard',
-                    chargeIndex: i + 1
-                });
-            });
-            xml += '      </Measurement>\n';
-            return updatedInner + '\n' + xml;
-        }
-
-        function generateImportedLadderXML(inner) {
-            let updatedInner = stripExistingImported(inner, 'Imported%20Ladder');
-            const idx = getNextMeasurementIndex(updatedInner);
-            let xml = `      <Measurement index="${idx}" showinreport="true" title="Imported%20Ladder">\n`;
-            allStats.forEach((item) => {
-                xml += generateChargeXML(item, {
-                    mode: 'ladder',
-                    chargeIndex: item.chargeIndex || 1
-                });
-            });
-            xml += '      </Measurement>\n';
-            return updatedInner + '\n' + xml;
-        }
-
-        function generateMinimalGRT() {
-            const mcG = getMcG();
-            const idx = 1;
-            let xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n';
-            xml += '<GordonsReloadingTool version="2021.2030-NIGHTLY">\n';
-            xml += '  <InnerBallistikInput>\n';
-            xml += '    <title>Chronograph%20Import</title>\n';
-            xml += '    <caliber>\n      <input name="CaliberName" value="Generic" />\n    </caliber>\n';
-            xml += '    <gun><input name="GunName" value="Generic" /></gun>\n';
-            xml += '    <projectile><input name="ProjectileName" value="Generic" /></projectile>\n';
-            xml += '    <propellant><input name="pname" value="Generic" /><input name="mc" value="' + mcG.toString() + '" unit="g" type="decimal" descr="propellant mass" /></propellant>\n';
-            xml += '    <appendix>\n';
-            const title = (mode === 'ladder') ? 'Imported%20Ladder' : 'Imported%20Measurement';
-            xml += `      <Measurement index="${idx}" showinreport="true" title="${title}">\n`;
-            allStats.forEach((item, i) => {
-                xml += generateChargeXML(item, {
-                    mode: (mode === 'ladder') ? 'ladder' : 'standard',
-                    chargeIndex: item.chargeIndex || (i + 1)
-                });
-            });
-            xml += '      </Measurement>\n';
-            xml += '    </appendix>\n';
-            xml += '  </InnerBallistikInput>\n';
-            xml += '</GordonsReloadingTool>';
-            return xml;
-        }
-
-        function generateOutput() {
-            if (grtBaseContent) {
-                const base = grtBaseContent;
-                const openIdx = base.indexOf('<appendix>');
-                const closeIdx = base.indexOf('</appendix>');
-                if (openIdx !== -1 && closeIdx !== -1) {
-                    const before = base.substring(0, openIdx);
-                    const after = base.substring(closeIdx + '</appendix>'.length);
-                    const inner = base.substring(openIdx + '<appendix>'.length, closeIdx);
-
-                    let newInner;
-                    if (mode === 'ladder') {
-                        newInner = generateImportedLadderXML(inner);
-                    } else {
-                        newInner = generateImportedMeasurementXML(inner);
-                    }
-
-                    outputXML = before + '<appendix>' + newInner + '</appendix>' + after;
-                    return;
-                }
-            }
-            outputXML = generateMinimalGRT();
-        }
-
-        function showResults() {
-            document.getElementById('uploadArea').classList.add('hidden');
-            document.getElementById('resultsArea').classList.remove('hidden');
-            document.getElementById('fileCount').textContent = allStats.length;
-
-            const uLabel = unitLabel();
-            const resUnit = document.getElementById('resultsUnit');
-            if (resUnit) resUnit.textContent = uLabel;
-
-            const grid = document.getElementById('statsGrid');
-            grid.innerHTML = allStats.map((item, i) => {
-                const s = item.stats;
-                let title;
-                if (mode === 'ladder') {
-                    if (ladderNameMode === 'charge') {
-                        title = `Charge ${item.chargeIndex || (i + 1)}`;
-                    } else {
-                        title = item.filename || `Charge ${item.chargeIndex || (i + 1)}`;
-                    }
-                } else {
-                    title = item.filename || `Charge ${i + 1}`;
-                }
-                return `
-                    <div class="bg-grt-panel-soft rounded-lg p-4 border border-grt-frame">
-                        <h3 class="text-white font-bold mb-2 text-xs md:text-sm truncate">${title}</h3>
-                        <div class="space-y-1 text-[11px] md:text-xs">
-                            <div class="flex justify-between">
-                                <span class="text-grt-subtle">Shots:</span>
-                                <span class="text-white font-semibold">${s.count}</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-grt-subtle">Average:</span>
-                                <span class="text-grt-soft font-semibold">${s.mean.toFixed(1)} ${uLabel}</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-grt-subtle">SD:</span>
-                                <span class="text-grt-soft font-semibold">${s.sd.toFixed(1)} ${uLabel}</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-grt-subtle">ES:</span>
-                                <span class="text-grt-soft font-semibold">${s.es.toFixed(1)} ${uLabel}</span>
-                            </div>
-                            <div class="flex justify-between">
-                                <span class="text-grt-subtle">Min / Max:</span>
-                                <span class="text-grt-soft font-semibold">${s.min.toFixed(1)} / ${s.max.toFixed(1)} ${uLabel}</span>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-        }
-
-        function downloadGRT() {
-            const blob = new Blob([outputXML], { type: 'application/xml;charset=utf-8' });
-            const link = document.createElement('a');
-            const url = URL.createObjectURL(blob);
-            const date = new Date().toISOString().split('T')[0].replace(/-/g, '');
-            link.href = url;
-            link.download = `GRT_Import_${date}.grtload`;
-            link.click();
-            URL.revokeObjectURL(url);
-        }
-    </script>
-</body>
-</html>
+<select class="px-2.5 py-1.5 rounded-lg bg-grt-panel-soft text-white text-xs md:text-sm border border-grt-frame focus:outline-none focus:ring-2 focus:ring-[var(--grt-accent)] focus:border-[var(--grt-accent)]" id="modeSelect" title="Select Standard, Ladder, or Sessions import mode.">
+<option value="normal">Standard → Imported Measurement</option>
+<option value="ladder">Ladder → Imported Ladder</option>
+<option value="sessions">Sessions - Imported Sessions</option>
+
+</select>
+<div class="mt-3 p-3 md:p-4 rounded-xl bg-grt-panel-soft border border-grt-frame">
+  <div class="flex flex-col md:flex-row md:items-baseline md:justify-between gap-1 md:gap-3 mb-2">
+    <span class="text-grt-soft text-xs md:text-sm font-semibold">Export &amp; GRT options</span>
+    <span class="text-grt-subtle text-[10px] md:text-xs">
+      Affects what gets written into the next <span class="font-mono">.grtload</span> export.
+    </span>
+  </div>
+
+  <div class="flex flex-col sm:flex-row sm:flex-wrap gap-3">
+    <label class="inline-flex items-center gap-2 text-grt-subtle text-[11px] md:text-xs" title="If enabled, we’ll write extended metrics into the charge notes when exporting.">
+      <input id="analysisIncludeInNotes" type="checkbox" class="rounded border-grt-frame bg-grt-panel-soft" />
+      <span>Write extended metrics into charge notes</span>
+    </label>
+
+    <label class="inline-flex items-center gap-2 text-grt-subtle text-[11px] md:text-xs" title="If enabled, we’ll add the Analysis summary note/tab to the .grtload appendix.">
+      <input id="exportAnalysisTab" type="checkbox" class="rounded border-grt-frame bg-grt-panel-soft" />
+      <span>Export “Analysis” tab (summary note)</span>
+    </label>
+  </div>
+
+  <div class="mt-2 text-grt-subtle text-[10px] md:text-xs">Remembered on this browser.</div>
+</div>
+</div>
+</div>
+<!-- Standard multi-file panel inside drag-and-drop zone -->
