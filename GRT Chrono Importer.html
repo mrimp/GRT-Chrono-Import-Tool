@@ -2,9 +2,9 @@
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta content="width=device-width, initial-scale=1.0" name="viewport">
-<title>GRT Importer Standard v0.80.18 RELEASE</title>
+<title>GRT Importer Standard v0.80.23 RELEASE</title>
 <script>
-const APP_VERSION = "0.80.18";
+const APP_VERSION = "0.80.23";
 const APP_BUILD = "2026-01-16";
 const APP_ID = "GRT Importer Standard";
 
@@ -345,7 +345,7 @@ input[type="file"]::file-selector-button:active{background: rgba(255,255,255,0.1
                     </p>
 <div class="u_flex u0169 u0220 u0184 u0292 u0408">
 <p class="u0395">
-                            GRT Importer Standard v0.80.18 • XquiziT Arms
+                            GRT Importer Standard v0.80.23 • XquiziT Arms
                         </p>
 <span class="u0219 u0220 u0183 u0321 u0326 u0335 u_border u0121 u0092 u0385 u0275 u0394" id="sessionPill" title="Summary of imported sessions and current velocity unit.">⚙️ Standard • 0 chrono files • m/s</span>
 </div>
@@ -747,6 +747,9 @@ input[type="file"]::file-selector-button:active{background: rgba(255,255,255,0.1
 <span>💾</span>
 <span>Export .grtload</span>
 </button>
+<button class="u0325 u0330 u0083 u0201 u0406 u0336 u0405 u0180 u0358 u_border u0108 u0417 u_transform u0199 u0209" id="exportDiagZipBtn" type="button" onclick="exportDiagnosticsZip()">
+                        Export Diagnostics ZIP
+                    </button>
 </div>
 </div>
 <!-- Analysis Dashboard -->
@@ -987,7 +990,8 @@ input[type="file"]::file-selector-button:active{background: rgba(255,255,255,0.1
             pf: ['pf', 'power factor', 'fattore', 'fattore di potenza', 'factor de potencia', 'facteur de puissance'],
             time: ['time', 'timestamp', 'date time', 'date/time', 'tempo', 'ora', 'heure', 'zeit', 'hora', 'tijd'],
             units_fps: ['fps', 'u0181', 'ft s'],
-            units_mps: ['m/s', 'mps', 'm s']
+            units_mps: ['m/s', 'mps', 'm s'],
+            energy: ['ke', 'k.e', 'kinetic', 'kinet', 'energy', 'energie', 'joule', '(j)', ' j', 'j)']
         };
 
         function fingerprintFormat(rows, headerRowIndex) {
@@ -1046,7 +1050,7 @@ input[type="file"]::file-selector-button:active{background: rgba(255,255,255,0.1
         }
 
         function detectColumns(rows, deviceKey) {
-            const scanRows = Math.min(30, rows.length);
+            const scanRows = Math.min(200, rows.length);
             let best = { headerRowIndex: -1, shotCol: -1, velCol: -1, pfCol: -1, timeCol: -1, notesCol: -1, startRow: -1, confidence: 0 };
 
             // 1) Look for a header row by concepts
@@ -1071,11 +1075,22 @@ input[type="file"]::file-selector-button:active{background: rgba(255,255,255,0.1
                 };
                 const isVelocityHeader = (h) => {
                     if (!h) return false;
-                    // Require actual velocity words; units alone (fps/mps) are too ambiguous (e.g., "Δ Avg (FPS)")
-                    if (!headerHasAny(h, TOKENS.velocity)) return false;
+
+                    // Hard-exclude energy/kinetic energy columns that otherwise look velocity-like
+                    if (headerHasAny(h, TOKENS.energy)) return false;
+
                     // Exclude common non-velocity columns
-                    if (h.includes('delta') || h.startsWith('Δ') ) return false;
-                    return true;
+                    if (h.includes('delta') || h.startsWith('Δ')) return false;
+                    if (h.includes('avg') && (h.includes('delta') || h.includes('Δ'))) return false;
+
+                    // Primary: explicit velocity words
+                    if (headerHasAny(h, TOKENS.velocity)) return true;
+
+                    // Secondary: unit-marked columns (Tempo (mps), Speed (fps), etc.)
+                    // Units alone can be ambiguous in delta/summary columns, so only accept when not a delta column.
+                    if (headerHasAny(h, TOKENS.units_fps) || headerHasAny(h, TOKENS.units_mps)) return true;
+
+                    return false;
                 };
                 const shotIdx = norm.findIndex(c => isShotIndexHeader(c));
                 const velIdx = norm.findIndex(c => isVelocityHeader(c));
@@ -1100,7 +1115,7 @@ input[type="file"]::file-selector-button:active{background: rgba(255,255,255,0.1
             // 2) If no header found, use heuristics
             if (best.confidence < 0.6) {
                 const cols = Math.max(...rows.slice(0, scanRows).map(r => (r || []).length));
-                const window = rows.slice(0, Math.min(rows.length, 60));
+                const window = rows.slice(0, Math.min(rows.length, 150));
 
                 function seqScore(nums) {
                     // score how close the series is to 1,2,3...
@@ -2263,16 +2278,6 @@ function updateProcessLadderButtonState() {
             updateLadderStateBadge();
             updateLadderControlsVisibility();
             updateProcessLadderButtonState();
-            /* v0.80 resetSession finalize */
-            // Re-apply ladder badge/lock + row visibility after clearing state.
-            try {
-                updateLadderStateBadge();
-                updateLadderControlsVisibility();
-                updateLadderRowsVisibility();
-                updateLadderChargeValueLabels();
-            } catch (e) {
-                // Non-fatal: UI helpers may not exist in older builds.
-            }
 
         }
 
@@ -2282,8 +2287,11 @@ function updateProcessLadderButtonState() {
         // =======================
 
         function resetSession() {
+            // Base + outputs
             grtBaseContent = null;
-            
+            outputXML = '';
+            allStats = [];
+
             // Reset GRT Sim JSON state
             grtSimLadderRows = null;
             grtSimSeriesForChart = null;
@@ -2295,18 +2303,8 @@ function updateProcessLadderButtonState() {
             if (typeof updateSimStatus === 'function') {
                 updateSimStatus('No file loaded. Requires GRT export with “Loading ladder complete (all charges)”.', false);
             }
-            // Reset ladder config derived from base .grtload
-            defaultMcValue = null;
-            ladderStepMassG = null;
-            grtLadderSteps = null;
-// Clear base .grtload selection
-            const baseInput = document.getElementById('grtBaseInput');
-            const baseStatus = document.getElementById('grtBaseStatus');
-            if (baseInput) baseInput.value = '';
-            if (baseStatus) baseStatus.textContent = '';
 
-            outputXML = '';
-            allStats = [];
+            // Reset ladder config derived from base .grtload
             defaultMcValue = '0.002';
             ladderStepMassG = null;
             grtLadderSteps = null;
@@ -2314,6 +2312,13 @@ function updateProcessLadderButtonState() {
             ladderSteps = 10;
             for (let i = 0; i < 10; i++) ladderSlots[i] = null;
 
+            // Clear base .grtload selection UI
+            const baseInput = document.getElementById('grtBaseInput');
+            const baseStatus = document.getElementById('grtBaseStatus');
+            if (baseInput) baseInput.value = '';
+            if (baseStatus) baseStatus.textContent = '';
+
+            // Clear pictures / notes
             importedPictures = [];
             importedNotesText = '';
             const picInput = document.getElementById('pictureInput');
@@ -2325,18 +2330,28 @@ function updateProcessLadderButtonState() {
             if (picStatus) picStatus.textContent = 'No pictures selected';
             if (notesStatus) notesStatus.textContent = 'No notes added';
 
-            document.getElementById('uploadArea').classList.remove('u_hidden');
-            document.getElementById('resultsArea').classList.add('u_hidden');
-            document.getElementById('statusArea').innerHTML = '';
-            document.getElementById('fileCount').textContent = '0';
-            // Clear chronograph file UI + selection (prevents "ghost" file rows after Start New Session)
+            // Swap views
+            const uploadArea = document.getElementById('uploadArea');
+            const resultsArea = document.getElementById('resultsArea');
+            if (uploadArea) uploadArea.classList.remove('u_hidden');
+            if (resultsArea) resultsArea.classList.add('u_hidden');
+
+            const statusArea = document.getElementById('statusArea');
+            if (statusArea) statusArea.innerHTML = '';
+
+            const fileCountEl = document.getElementById('fileCount');
+            if (fileCountEl) fileCountEl.textContent = '0';
+
+            // Clear chronograph file UI + selection (prevents “ghost” file rows after Start New Session)
             const fileStatusListEl = document.getElementById('fileStatusList');
             if (fileStatusListEl) fileStatusListEl.innerHTML = '';
             const chronoInputEl = document.getElementById('garminInput');
             if (chronoInputEl) chronoInputEl.value = '';
 
-            document.getElementById('statsGrid').innerHTML = '';
-            document.getElementById('resultsUnit').textContent = '';
+            const statsGrid = document.getElementById('statsGrid');
+            if (statsGrid) statsGrid.innerHTML = '';
+            const resultsUnit = document.getElementById('resultsUnit');
+            if (resultsUnit) resultsUnit.textContent = '';
 
             // Clear run summary
             const sFiles = document.getElementById('summaryFiles');
@@ -2352,9 +2367,10 @@ function updateProcessLadderButtonState() {
             if (sUnit) sUnit.textContent = '–';
             if (sBase) sBase.textContent = 'Not loaded';
 
-            const container = document.getElementById('ladderRows');
-            if (container) {
-                Array.from(container.children).forEach((row) => {
+            // Clear ladder file inputs + labels
+            const ladderRowsEl = document.getElementById('ladderRows');
+            if (ladderRowsEl) {
+                Array.from(ladderRowsEl.children).forEach((row) => {
                     const input = row.querySelector('input[type="file"]');
                     const label = row.querySelector('[id^="ladderLabel"]');
                     row.classList.remove('ring-thin', 'ring-danger');
@@ -2363,6 +2379,7 @@ function updateProcessLadderButtonState() {
                 });
             }
 
+            // Restore last-used prefs from localStorage (best-effort)
             const unitSelect = document.getElementById('unitSelect');
             const deviceSelect = document.getElementById('deviceSelect');
             const modeSelect = document.getElementById('modeSelect');
@@ -2374,7 +2391,6 @@ function updateProcessLadderButtonState() {
             let savedNameMode = null;
             let savedMode = null;
             let savedSteps = null;
-            let savedChronoSim = null;
 
             try {
                 savedUnit = localStorage.getItem('xqa_unit');
@@ -2382,37 +2398,32 @@ function updateProcessLadderButtonState() {
                 savedNameMode = localStorage.getItem('xqa_ladderNameMode');
                 savedMode = localStorage.getItem('xqa_mode');
                 savedSteps = localStorage.getItem('xqa_ladderSteps');
-                savedChronoSim = localStorage.getItem('xqa_ladderChronoSim');
             } catch (e) {}
 
             unit = (savedUnit === 'metric' || savedUnit === 'imperial') ? savedUnit : 'imperial';
-            if (unitSelect) unitSelect.value = unit;
-
             chronographType = (savedDevice === 'garmin' || savedDevice === 'athlon') ? savedDevice : 'garmin';
-            if (deviceSelect) deviceSelect.value = chronographType;
-
             ladderNameMode = (savedNameMode === 'charge' || savedNameMode === 'filename') ? savedNameMode : 'filename';
-            if (ladderNameSelect) ladderNameSelect.value = ladderNameMode;
+            mode = (savedMode === 'ladder' || savedMode === 'normal' || savedMode === 'sessions') ? savedMode : 'normal';
 
             if (savedSteps) {
                 const n = parseInt(savedSteps, 10);
-                if (!isNaN(n) && n >= 2 && n <= 10) {
-                    ladderSteps = n;
-                }
+                if (!isNaN(n) && n >= 2 && n <= 10) ladderSteps = n;
             }
 
-            mode = (savedMode === 'ladder' || savedMode === 'normal' || savedMode === 'sessions') ? savedMode : 'normal';
+            if (unitSelect) unitSelect.value = unit;
+            if (deviceSelect) deviceSelect.value = chronographType;
+            if (ladderNameSelect) ladderNameSelect.value = ladderNameMode;
             if (modeSelect) modeSelect.value = mode;
-            updateModeUI();
-            const ladderChronoCheckbox = document.getElementById('ladderIncludeChronoSim');
-
             if (ladderStepsSelect) ladderStepsSelect.value = String(ladderSteps);
-            updateLadderRowsVisibility();
 
+            updateModeUI();
+            updateLadderRowsVisibility();
             updateLadderChargeValueLabels();
             updateLadderStateBadge();
             updateLadderControlsVisibility();
-            updateProcessLadderButtonState();}
+            updateProcessLadderButtonState();
+            if (typeof updateSessionPill === 'function') updateSessionPill();
+        }
 
         function updateModeUI() {
             const multiPanel = document.getElementById('multiFileDropzone');
@@ -3599,6 +3610,16 @@ function updateProcessLadderButtonState() {
                 const row = rows[i];
                 if (!row) continue;
 
+                // Garmin exports often append a 2-column summary section below the shot table (e.g. Ø Geschwindigkeit, Ø Kinetische Energie).
+                // Stop reading when the first column stops being a numeric shot index, otherwise summary values (like KE in Joules) can be misread as velocities.
+                const shotCell = row[0];
+                const shotStr = String(shotCell === null || shotCell === undefined ? '' : shotCell).trim();
+                const isShotRow = /^[0-9]+$/.test(shotStr);
+                if (!isShotRow) {
+                    if (velocities.length) break;
+                    continue;
+                }
+
                 const label = String(row[0] || '').toLowerCase().trim();
                 const valueCell = row[velocityColIndex];
                 const num = parseNumber(valueCell);
@@ -3829,6 +3850,16 @@ function processExcel(arrayBuffer) {
             for (let i = headerRowIndex + 1; i < rows.length; i++) {
                 const row = rows[i];
                 if (!row) continue;
+
+                // Garmin exports often append a 2-column summary section below the shot table (e.g. Ø Geschwindigkeit, Ø Kinetische Energie).
+                // Stop reading when the first column stops being a numeric shot index, otherwise summary values (like KE in Joules) can be misread as velocities.
+                const shotCell = row[0];
+                const shotStr = String(shotCell === null || shotCell === undefined ? '' : shotCell).trim();
+                const isShotRow = /^[0-9]+$/.test(shotStr);
+                if (!isShotRow) {
+                    if (velocities.length) break;
+                    continue;
+                }
 
                 const label = String(row[0] || '').toLowerCase().trim();
                 const valueCell = row[velocityColIndex];
@@ -4723,7 +4754,7 @@ function generateMinimalGRT() {
             let xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n';
             xml += '<GordonsReloadingTool version="2021.2030-NIGHTLY">\n';
             xml += '  <InnerBallistikInput>\n';
-            xml += '    <title>GRT Importer Standard v0.80.18 RELEASE</title>\n';
+            xml += '    <title>GRT Importer Standard v0.80.23 RELEASE</title>\n';
             xml += '    <caliber>\n      <input name="CaliberName" value="Generic" />\n    </caliber>\n';
             xml += '    <gun><input name="GunName" value="Generic" /></gun>\n';
             xml += '    <projectile><input name="ProjectileName" value="Generic" /></projectile>\n';
@@ -5658,6 +5689,272 @@ function showResults() {
                     });
             } else {
                 fallbackCopyToClipboard(text);
+            }
+        }
+
+
+        // =======================
+        // One-click Export: Diagnostics + Raw Parsed Rows (ZIP)
+        // =======================
+        function __xqa_textEncoder() {
+            if (typeof TextEncoder !== 'undefined') return new TextEncoder();
+            return null;
+        }
+
+        function __xqa_utf8Bytes(str) {
+            const s = String(str == null ? '' : str);
+            const enc = __xqa_textEncoder();
+            if (enc) return enc.encode(s);
+            // Fallback UTF-8 encode
+            const out = [];
+            for (let i = 0; i < s.length; i++) {
+                let c = s.charCodeAt(i);
+                if (c < 0x80) out.push(c);
+                else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 0x3F));
+                else if (c < 0xD800 || c >= 0xE000) out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 0x3F), 0x80 | (c & 0x3F));
+                else {
+                    // surrogate pair
+                    i++;
+                    const c2 = s.charCodeAt(i);
+                    const u = 0x10000 + (((c & 0x3FF) << 10) | (c2 & 0x3FF));
+                    out.push(
+                        0xF0 | (u >> 18),
+                        0x80 | ((u >> 12) & 0x3F),
+                        0x80 | ((u >> 6) & 0x3F),
+                        0x80 | (u & 0x3F)
+                    );
+                }
+            }
+            return new Uint8Array(out);
+        }
+
+        // CRC32 (for ZIP)
+        const __xqa_crcTable = (function() {
+            const table = new Uint32Array(256);
+            for (let i = 0; i < 256; i++) {
+                let c = i;
+                for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+                table[i] = c >>> 0;
+            }
+            return table;
+        })();
+
+        function __xqa_crc32(u8) {
+            let c = 0xFFFFFFFF;
+            for (let i = 0; i < u8.length; i++) c = __xqa_crcTable[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+            return (c ^ 0xFFFFFFFF) >>> 0;
+        }
+
+        function __xqa_writeU16(buf, off, v) {
+            buf[off] = v & 0xFF;
+            buf[off + 1] = (v >>> 8) & 0xFF;
+        }
+        function __xqa_writeU32(buf, off, v) {
+            buf[off] = v & 0xFF;
+            buf[off + 1] = (v >>> 8) & 0xFF;
+            buf[off + 2] = (v >>> 16) & 0xFF;
+            buf[off + 3] = (v >>> 24) & 0xFF;
+        }
+
+        // (removed broken __xqa_zipStore implementation)
+
+        function __xqa_sumLen(arr) { let s = 0; for (const a of arr) s += a.length; return s; }
+        function __xqa_zipStore_fixed(files) {
+            const localParts = [];
+            const centralParts = [];
+            let offset = 0;
+
+            const now = new Date();
+            const dosTime = ((now.getHours() & 0x1F) << 11) | ((now.getMinutes() & 0x3F) << 5) | ((Math.floor(now.getSeconds() / 2)) & 0x1F);
+            const dosDate = (((now.getFullYear() - 1980) & 0x7F) << 9) | (((now.getMonth() + 1) & 0x0F) << 5) | ((now.getDate()) & 0x1F);
+
+            for (const f of files) {
+                const nameBytes = __xqa_utf8Bytes(f.name);
+                const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data || []);
+                const crc = __xqa_crc32(data);
+
+                const lh = new Uint8Array(30 + nameBytes.length);
+                __xqa_writeU32(lh, 0, 0x04034b50);
+                __xqa_writeU16(lh, 4, 20);
+                __xqa_writeU16(lh, 6, 0);
+                __xqa_writeU16(lh, 8, 0);
+                __xqa_writeU16(lh, 10, dosTime);
+                __xqa_writeU16(lh, 12, dosDate);
+                __xqa_writeU32(lh, 14, crc);
+                __xqa_writeU32(lh, 18, data.length);
+                __xqa_writeU32(lh, 22, data.length);
+                __xqa_writeU16(lh, 26, nameBytes.length);
+                __xqa_writeU16(lh, 28, 0);
+                lh.set(nameBytes, 30);
+
+                localParts.push(lh);
+                localParts.push(data);
+
+                const ch = new Uint8Array(46 + nameBytes.length);
+                __xqa_writeU32(ch, 0, 0x02014b50);
+                __xqa_writeU16(ch, 4, 20);
+                __xqa_writeU16(ch, 6, 20);
+                __xqa_writeU16(ch, 8, 0);
+                __xqa_writeU16(ch, 10, 0);
+                __xqa_writeU16(ch, 12, dosTime);
+                __xqa_writeU16(ch, 14, dosDate);
+                __xqa_writeU32(ch, 16, crc);
+                __xqa_writeU32(ch, 20, data.length);
+                __xqa_writeU32(ch, 24, data.length);
+                __xqa_writeU16(ch, 28, nameBytes.length);
+                __xqa_writeU16(ch, 30, 0);
+                __xqa_writeU16(ch, 32, 0);
+                __xqa_writeU16(ch, 34, 0);
+                __xqa_writeU16(ch, 36, 0);
+                __xqa_writeU32(ch, 38, 0);
+                __xqa_writeU32(ch, 42, offset);
+                ch.set(nameBytes, 46);
+                centralParts.push(ch);
+
+                offset += lh.length + data.length;
+            }
+
+            const centralSize = __xqa_sumLen(centralParts);
+            const end = new Uint8Array(22);
+            __xqa_writeU32(end, 0, 0x06054b50);
+            __xqa_writeU16(end, 4, 0);
+            __xqa_writeU16(end, 6, 0);
+            __xqa_writeU16(end, 8, files.length);
+            __xqa_writeU16(end, 10, files.length);
+            __xqa_writeU32(end, 12, centralSize);
+            __xqa_writeU32(end, 16, offset);
+            __xqa_writeU16(end, 20, 0);
+
+            const totalSize = offset + centralSize + end.length;
+            const out = new Uint8Array(totalSize);
+            let p = 0;
+            for (const part of localParts) {
+                out.set(part, p);
+                p += part.length;
+            }
+            for (const part of centralParts) {
+                out.set(part, p);
+                p += part.length;
+            }
+            out.set(end, p);
+            return out;
+        }
+
+        function __xqa_downloadBytes(u8, filename, mime) {
+            const blob = new Blob([u8], { type: mime || 'application/zip' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 250);
+        }
+
+        function __xqa_safeStem(name) {
+            const base = String(name || 'file')
+                .replace(/\.(csv|xls|xlsx)$/i, '')
+                .replace(/[^a-z0-9 _\-]+/gi, '')
+                .trim()
+                .replace(/\s+/g, '_');
+            return base || 'file';
+        }
+
+        function __xqa_csvEscape(v) {
+            const s = (v === null || v === undefined) ? '' : String(v);
+            if (/[\n\r",]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+            return s;
+        }
+
+        function __xqa_buildRawParsedCsv(item) {
+            const s = (item && item.stats) ? item.stats : {};
+            const velocities = Array.isArray(s.velocities) ? s.velocities : [];
+            const meta = Array.isArray(s.shotMeta) ? s.shotMeta : [];
+            const fileUnit = (s.fileUnit || unit);
+            const unitLabelSrc = (fileUnit === 'imperial') ? 'fps' : 'm/s';
+
+            const lines = [];
+            lines.push('shot_index,velocity_source,source_unit,velocity_mps,pf,time,note');
+            for (let i = 0; i < velocities.length; i++) {
+                const v = velocities[i];
+                const m = meta[i] || {};
+                const vMps = (fileUnit === 'imperial') ? fpsToMps(v) : v;
+                lines.push([
+                    i + 1,
+                    __xqa_csvEscape(isFinite(v) ? v : ''),
+                    unitLabelSrc,
+                    __xqa_csvEscape(isFinite(vMps) ? vMps : ''),
+                    __xqa_csvEscape(m.pf || ''),
+                    __xqa_csvEscape(m.time || ''),
+                    __xqa_csvEscape(m.note || '')
+                ].join(','));
+            }
+            return lines.join('\n');
+        }
+
+        function exportDiagnosticsZip() {
+            try {
+                if (!allStats || !allStats.length) {
+                    showStatus('error', 'Nothing to export yet. Import chronograph files first.');
+                    return;
+                }
+
+                const now = new Date();
+                const pad2 = (n)=>String(n).padStart(2,'0');
+                const stamp = `${now.getFullYear()}${pad2(now.getMonth()+1)}${pad2(now.getDate())}_${pad2(now.getHours())}${pad2(now.getMinutes())}`;
+                const baseStem = (grtBaseFilename || 'GRT_Import').replace(/\.grtload$/i,'').replace(/[^a-z0-9 _\-]+/gi,'').trim().replace(/\s+/g,'_') || 'GRT_Import';
+
+                // diagnostics.json
+                const diag = {
+                    app: 'GRT Importer Standard',
+                    version: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : 'unknown',
+                    exportedAt: now.toISOString(),
+                    mode: mode,
+                    chronographType: chronographType,
+                    displayUnit: unit,
+                    files: []
+                };
+
+                const usedNames = {};
+                const zipFiles = [];
+
+                for (const item of allStats) {
+                    const s = item.stats || {};
+                    const stem0 = __xqa_safeStem(item.filename || 'file');
+                    let stem = stem0;
+                    let k = 2;
+                    while (usedNames[stem]) { stem = `${stem0}-${k}`; k++; }
+                    usedNames[stem] = true;
+
+                    const csvText = __xqa_buildRawParsedCsv(item);
+                    zipFiles.push({ name: `raw_rows/${stem}.csv`, data: __xqa_utf8Bytes(csvText) });
+
+                    diag.files.push({
+                        filename: item.filename || '',
+                        count: s.count || 0,
+                        mean: s.mean,
+                        sd: s.sd,
+                        es: s.es,
+                        min: s.min,
+                        max: s.max,
+                        fileUnit: s.fileUnit || unit,
+                        hasShotMeta: Array.isArray(s.shotMeta) && s.shotMeta.length > 0,
+                        hasGarminStats: !!s.garminStats,
+                        zipCsv: `raw_rows/${stem}.csv`
+                    });
+                }
+
+                zipFiles.unshift({ name: 'diagnostics.json', data: __xqa_utf8Bytes(JSON.stringify(diag, null, 2)) });
+
+                // Fix a small JS typo (True -> true) by forcing through a safe pass
+                
+                const zipBytes = __xqa_zipStore_fixed(zipFiles);
+                __xqa_downloadBytes(zipBytes, `${baseStem}_Diagnostics_${stamp}.zip`, 'application/zip');
+                showStatus('success', 'Diagnostics ZIP exported.');
+            } catch (e) {
+                console.error(e);
+                showStatus('error', 'Diagnostics export failed: ' + (e && e.message ? e.message : String(e)));
             }
         }
 
