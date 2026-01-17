@@ -12,6 +12,34 @@ Direct tool file (bypasses the landing page):
 - https://mrimp.github.io/GRT-Chrono-Import-Tool/GRT%20Chrono%20Importer.html
 
 > If the GitHub Pages link 404s, enable it in **Repo → Settings → Pages** (Deploy from branch: `main`, folder: `/root`).
+>
+New: Export Diagnostics ZIP
+
+We added a one-click export to help debug weird imports (units, parsing, missing shots, etc.).
+
+How to use it
+
+Open the Importer HTML in your browser.
+Import your file(s) like normal (CSV/XLS/XLSX — Garmin/Athlon/etc.).
+After the import finishes, click Export Diagnostics ZIP.
+Your browser will download a ZIP containing:
+diagnostics.json
+Import details per file (detected device/type, units, column mapping, start row, plus summary stats like count/mean/SD/ES/min/max).
+raw_rows/*.csv (one CSV per imported file/session)
+The raw parsed rows the importer used (shot #, velocity, PF/time/note if present, and the original “velocityRaw” cell text).
+
+When to use it
+
+Use this button anytime:
+The units look wrong (m/s vs fps conversion issues),
+The shot count doesn’t match what the device shows,
+You see wild SD/ES or obvious outliers that shouldn’t be there,
+A Sessions workbook imports strangely.
+What to send back
+Please attach the ZIP in your feedback along with:
+what device exported the file (Garmin/Athlon/etc.),
+what units the device/app was set to,
+what you expected vs what the importer showed.
 
 ## Offline usage
 
