@@ -1562,23 +1562,26 @@ let chronoSimPngData = '';
             return v;
         }
 
-        // Resolve a per-file unit from mapping hints (fps/mps/auto) + numeric inference
-        function resolveFileUnit(mappingUnit, inferredUnit){
-            // UI provides: auto | mps | fps
-            // Data inference provides: auto | mps | fps
-            // Return canonical units used by the rest of the app: 'metric' or 'imperial'.
-            const m = (mappingUnit || 'auto').toLowerCase();
-            const i = (inferredUnit || 'auto').toLowerCase();
+        function normalizeUnitHint(value) {
+            const raw = String(value == null ? 'auto' : value).trim().toLowerCase();
+            if (!raw || raw === 'auto') return 'auto';
+            if (raw === 'imperial' || raw === 'fps' || raw === 'ft/s' || raw === 'ft s') return 'fps';
+            if (raw === 'metric' || raw === 'mps' || raw === 'm/s' || raw === 'm s') return 'mps';
+            return 'auto';
+        }
 
-            // Start with UI selection unless it's auto
-            let chosen = (m === 'auto' || m === '') ? i : m;
-            if(chosen === 'auto' || chosen === '') chosen = 'mps';
-
-            // If UI hint disagrees with data, trust the data
-            if(i !== 'auto' && m !== 'auto' && m !== '' && m !== i){
-                chosen = i;
+        function pickPreferredUnitHint() {
+            for (let i = 0; i < arguments.length; i++) {
+                const normalized = normalizeUnitHint(arguments[i]);
+                if (normalized !== 'auto') return normalized;
             }
+            return 'auto';
+        }
 
+        // Resolve a per-file unit from UI/mapping hints + optional inference.
+        // Explicit user choices win. Inference is only a fallback.
+        function resolveFileUnit(mappingUnit, inferredUnit){
+            const chosen = pickPreferredUnitHint(mappingUnit, inferredUnit, 'mps');
             return (chosen === 'fps') ? 'imperial' : 'metric';
         }
 
@@ -1976,7 +1979,10 @@ function showStatus(type, message) {
                                         if (!velocities.length) throw new Error('No valid velocity data found with selected mapping');
                                         const st = computeStats(velocities);
                                         const garminStats = { avg: st.mean, sd: st.sd, es: st.es, min: st.min, max: st.max, powerFactorAvg: null, energyAvg: null };
-                                        const fileUnit = resolveFileUnit(merged.unit || 'auto', 'auto');
+                                        const fileUnit = resolveFileUnit(
+                                            pickPreferredUnitHint(merged.unit, getUnitHint()),
+                                            getUnitHint()
+                                        );
                                         const stats = { ...st, velocities, garminStats, shotMeta, fileUnit };
 
                                         ladderSlots[chargeIndex - 1] = { stats, filename: file.name, chargeIndex };
@@ -3461,7 +3467,10 @@ function updateProcessLadderButtonState() {
                                                 if (!velocities.length) throw new Error('No valid velocity data found with selected mapping');
                                                 const stats = computeStats(velocities);
                                                 const garminStats = { avg: stats.mean, sd: stats.sd, es: stats.es, min: stats.min, max: stats.max, powerFactorAvg: null, energyAvg: null };
-                                                const fileUnit = resolveFileUnit(merged.unit, payload.unitSuggested || "mps");
+                                                const fileUnit = resolveFileUnit(
+                                                    pickPreferredUnitHint(merged.unit, getUnitHint()),
+                                                    pickPreferredUnitHint(payload.unitSuggested, getUnitHint())
+                                                );
 
             return { ...stats, velocities, garminStats, shotMeta, fileUnit };
                                             })()
